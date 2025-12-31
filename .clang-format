@@ -1,0 +1,135 @@
+# ============================================================
+# Google C++ Style (Extended, Production Ready)
+# ============================================================
+
+BasedOnStyle: Google
+Language: Cpp
+
+# ------------------------------------------------------------
+# Indentation & Layout
+# ------------------------------------------------------------
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+
+AccessModifierOffset: -2
+IndentCaseLabels: true
+IndentCaseBlocks: false
+IndentGotoLabels: false
+IndentExternBlock: NoIndent
+
+# ------------------------------------------------------------
+# Line breaking
+# ------------------------------------------------------------
+ColumnLimit: 80
+BreakBeforeBraces: Attach
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortBlocksOnASingleLine: Never
+
+# ------------------------------------------------------------
+# Braces
+# ------------------------------------------------------------
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: false
+  AfterEnum: false
+  AfterFunction: false
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+  IndentBraces: false
+
+# ------------------------------------------------------------
+# Spaces
+# ------------------------------------------------------------
+SpaceBeforeParens: ControlStatements
+SpaceAfterCStyleCast: true
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeRangeBasedForLoopColon: true
+
+SpacesInAngles: false
+SpacesInContainerLiterals: false
+SpacesInCStyleCastParentheses: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# ------------------------------------------------------------
+# Alignment
+# ------------------------------------------------------------
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: true
+AlignTrailingComments: true
+
+# ------------------------------------------------------------
+# Pointer & Reference
+# ------------------------------------------------------------
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+
+# ------------------------------------------------------------
+# Includes
+# ------------------------------------------------------------
+SortIncludes: true
+IncludeBlocks: Preserve
+
+# ------------------------------------------------------------
+# Comments
+# ------------------------------------------------------------
+ReflowComments: true
+CommentPragmas: '^ IWYU pragma:'
+
+# ------------------------------------------------------------
+# C++ Specific
+# ------------------------------------------------------------
+Standard: c++20
+DerivePointerAlignment: false
+FixNamespaceComments: true
+
+# ------------------------------------------------------------
+# Function formatting
+# ------------------------------------------------------------
+AlwaysBreakAfterReturnType: None
+AlwaysBreakTemplateDeclarations: Yes
+BinPackArguments: true
+BinPackParameters: true
+
+# ------------------------------------------------------------
+# Constructor Initializers
+# ------------------------------------------------------------
+BreakConstructorInitializers: BeforeColon
+ConstructorInitializerIndentWidth: 4
+
+# ------------------------------------------------------------
+# Lambda formatting
+# ------------------------------------------------------------
+LambdaBodyIndentation: Signature
+
+# ------------------------------------------------------------
+# Preprocessor
+# ------------------------------------------------------------
+IndentPPDirectives: None
+
+# ------------------------------------------------------------
+# Namespace formatting
+# ------------------------------------------------------------
+NamespaceIndentation: None
+CompactNamespaces: false
+
+# ------------------------------------------------------------
+# Penalties (encourage readable breaks)
+# ------------------------------------------------------------
+PenaltyBreakBeforeFirstCallParameter: 100
+PenaltyBreakAssignment: 2
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakString: 1000
+PenaltyExcessCharacter: 1000000
+PenaltyReturnTypeOnItsOwnLine: 60
