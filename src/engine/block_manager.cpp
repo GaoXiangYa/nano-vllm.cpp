@@ -97,7 +97,7 @@ void BlockManager::Allocate(Sequence& seq) {
 
   size_t prefix_hash = -1;
   bool cache_miss = false;
-  const int num_blocks = seq.GetNumBlocks();
+  const size_t num_blocks = seq.GetNumBlocks();
   Block* block = nullptr;
 
   for (int i = 0; i < num_blocks; ++i) {
