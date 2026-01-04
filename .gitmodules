@@ -1,3 +1,6 @@
 [submodule "third_party/ggml"]
 	path = third_party/ggml
 	url = https://github.com/ggml-org/ggml
+[submodule "third_party/xxHash"]
+	path = third_party/xxHash
+	url = https://github.com/Cyan4973/xxHash.git

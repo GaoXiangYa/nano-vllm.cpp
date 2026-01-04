@@ -17,6 +17,7 @@ target_include_directories(nano-vllm
   PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src/include/
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xxHash/
 )
 target_link_libraries(nano-vllm
   PRIVATE
