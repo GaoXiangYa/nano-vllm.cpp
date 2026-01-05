@@ -54,14 +54,18 @@ public:
                      this->token_ids_.end());
   }
 
-  size_t GetNumCachedBlocks() {
+  size_t GetNumCachedBlocks() const {
     return (this->num_cached_tokens_ + this->block_size_ - 1) /
            this->block_size_;
   }
 
-  size_t GetLastBlockNumTokens() {
+  size_t GetLastBlockNumTokens() const {
     return this->num_tokens_ - (this->GetNumBlocks() - 1) * this->block_size_;
   }
+
+  size_t GetNumCachedTokens() const { return num_cached_tokens_; }
+
+  void SetStatus(const SequenceStatus& status) { this->status_ = status; }
 
 private:
   int seq_id_;

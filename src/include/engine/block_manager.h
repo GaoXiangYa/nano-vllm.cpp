@@ -46,15 +46,15 @@ class BlockManager {
 public:
   BlockManager(int num_blocks, size_t block_size);
 
-  bool CanAllocate(const Sequence& seq) const;
+  bool CanAllocate(const Sequence* seq) const;
 
-  void Allocate(Sequence& seq);
+  void Allocate(Sequence* seq);
 
-  void Deallocate(Sequence& seq);
+  void Deallocate(Sequence* seq);
 
-  bool CanAppend(const Sequence& seq) const;
+  bool CanAppend(const Sequence* seq) const;
 
-  void Append(Sequence& seq);
+  void Append(Sequence* seq);
 
 private:
   size_t ComputeHash(const std::span<size_t>& token_ids, size_t prefix = 0);

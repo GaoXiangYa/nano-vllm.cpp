@@ -1,6 +1,7 @@
 #include "engine/block_manager.h"
 #include <cassert>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include "engine/sequence.h"
 #include "xxhash.h"
@@ -87,21 +88,21 @@ void BlockManager::DeallocateBlock(size_t block_id) {
   this->free_block_ids_.insert(block_id);
 }
 
-bool BlockManager::CanAllocate(const Sequence& seq) const {
-  return this->free_block_ids_.size() >= seq.GetNumBlocks();
+bool BlockManager::CanAllocate(const Sequence* seq) const {
+  return this->free_block_ids_.size() >= seq->GetNumBlocks();
 }
 
 
-void BlockManager::Allocate(Sequence& seq) {
+void BlockManager::Allocate(Sequence* seq) {
   assert(!seq.block_table_.IsEmptyBlockTable());
 
   size_t prefix_hash = -1;
   bool cache_miss = false;
-  const size_t num_blocks = seq.GetNumBlocks();
+  const size_t num_blocks = seq->GetNumBlocks();
   Block* block = nullptr;
 
   for (int i = 0; i < num_blocks; ++i) {
-    auto token_ids = seq.GetTokenIds(i);
+    auto token_ids = seq->GetTokenIds(i);
     prefix_hash = this->ComputeHash(token_ids, prefix_hash);
     
     size_t block_id = -1;
@@ -116,7 +117,7 @@ void BlockManager::Allocate(Sequence& seq) {
       block_id = *this->free_block_ids_.begin();
       block = this->AllocateBlock(block_id);
     } else {
-      seq.UpdateCachedTokensNum(this->block_size_);
+      seq->UpdateCachedTokensNum(this->block_size_);
       if (this->used_block_ids_.contains(block_id)) {
         block = this->GetBlock(block_id);
         block->AddRefCount();
@@ -130,41 +131,41 @@ void BlockManager::Allocate(Sequence& seq) {
       this->hash_to_block_id_[prefix_hash] = block_id;
     }
 
-    seq.AddBlock(block_id);
+    seq->AddBlock(block_id);
   }
 }
 
-void BlockManager::Deallocate(Sequence& seq) {
-  for (auto block_id : seq.GetBlockTable()) {
+void BlockManager::Deallocate(Sequence* seq) {
+  for (auto block_id : seq->GetBlockTable()) {
     auto block = this->GetBlock(block_id);
     block->SubRefCount();
     if (block->GetRefCount() == 0) {
       this->DeallocateBlock(block_id);
     }
   }
-  seq.ClearCachedBlocks();
+  seq->ClearCachedBlocks();
 }
 
-bool BlockManager::CanAppend(const Sequence& seq) const {
-  if (seq.SequenceLen() % this->block_size_ == 1) {
+bool BlockManager::CanAppend(const Sequence* seq) const {
+  if (seq->SequenceLen() % this->block_size_ == 1) {
     return !this->free_block_ids_.empty();
   }
   return true;
 }
 
-void BlockManager::Append(Sequence& seq) {
-  auto last_block_idx = seq.GetBlockTable().size() - 1;
-  auto last_block_id = seq.GetBlockTable().back();
+void BlockManager::Append(Sequence* seq) {
+  auto last_block_idx = seq->GetBlockTable().size() - 1;
+  auto last_block_id = seq->GetBlockTable().back();
   auto last_block = this->GetBlock(last_block_id);
-  auto& block_table = seq.GetBlockTable();
-  if (seq.SequenceLen() % this->block_size_ == 1) {
+  auto& block_table = seq->GetBlockTable();
+  if (seq->SequenceLen() % this->block_size_ == 1) {
     auto block_id = *this->free_block_ids_.begin();
     this->AllocateBlock(block_id);
-    seq.AddBlock(block_id);
-  } else if (seq.SequenceLen() % this->block_size_ == 0) {
-    auto token_ids = seq.GetTokenIds(seq.GetNumBlocks() - 1);
+    seq->AddBlock(block_id);
+  } else if (seq->SequenceLen() % this->block_size_ == 0) {
+    auto token_ids = seq->GetTokenIds(seq->GetNumBlocks() - 1);
     size_t prefix_hash = -1;
-    if (seq.GetBlockTable().size() > 1) {
+    if (seq->GetBlockTable().size() > 1) {
       prefix_hash = this->blocks_[block_table[last_block_idx - 1]]->GetHash();
     }
     prefix_hash = this->ComputeHash(token_ids, prefix_hash);
