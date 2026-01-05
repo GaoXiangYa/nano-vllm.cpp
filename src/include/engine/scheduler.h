@@ -19,11 +19,11 @@ public:
     return this->waiting_.empty() && this->running_.empty();
   }
 
-  void Add(std::unique_ptr<Sequence> seq) { this->waiting_.push_back(seq); }
+  void Add(const std::shared_ptr<Sequence>& seq) { this->waiting_.push_back(seq); }
 
-  std::pair<std::vector<std::unique_ptr<Sequence>>, bool> Schedule();
+  auto Schedule();
 
-  void Preempt(std::unique_ptr<Sequence> seq);
+  void Preempt(const Sequence* seq);
 
   void PostProcess(const std::vector<std::unique_ptr<Sequence>>& seqs,
                    const std::vector<size_t>& token_ids);
@@ -33,8 +33,8 @@ private:
   size_t max_num_bathced_tokens_;
   size_t eos_;
   std::unique_ptr<BlockManager> block_manager_;
-  std::deque<std::unique_ptr<Sequence>> waiting_{};
-  std::deque<std::unique_ptr<Sequence>> running_{};
+  std::deque<std::shared_ptr<Sequence>> waiting_{};
+  std::deque<std::shared_ptr<Sequence>> running_{};
 };
 
 }  // namespace engine
