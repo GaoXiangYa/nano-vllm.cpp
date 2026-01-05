@@ -9,7 +9,7 @@ namespace engine {
 Sequence::Sequence(const std::vector<size_t>& token_ids,
                    SamplingParams sampling_params)
     : seq_id_(counter_++),
-      status_(SequenceStatus::WATTING),
+      status_(SequenceStatus::WAITING),
       last_token_(token_ids.back()),
       num_tokens_(token_ids.size()),
       token_ids_(token_ids),

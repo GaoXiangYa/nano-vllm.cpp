@@ -9,7 +9,7 @@
 #include "../sampling_params.h"
 namespace engine {
 
-enum class SequenceStatus { WATTING, RUNNING, FINISHED };
+enum class SequenceStatus { WAITING, RUNNING, FINISHED };
 
 class Sequence {
 public:
@@ -67,6 +67,10 @@ public:
 
   void SetStatus(const SequenceStatus& status) { this->status_ = status; }
 
+  bool IsIgnoreEos() const { return ignore_eos_; }
+
+  size_t GetMaxTokens() const { return max_tokens_; }
+
 private:
   int seq_id_;
   SequenceStatus status_;
@@ -79,7 +83,7 @@ private:
   size_t num_prompt_tokens;
   static inline std::atomic<int> counter_{0};
   float temperature_;
-  int max_tokens_;
+  size_t max_tokens_;
   bool ignore_eos_;
 };
 }  // namespace engine
