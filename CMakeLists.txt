@@ -18,7 +18,10 @@ target_include_directories(nano-vllm
   ${CMAKE_CURRENT_SOURCE_DIR}/src/include/
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xxHash/
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tokenizers-cpp/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/safetensors-cpp/
 )
+
 target_link_libraries(nano-vllm
   PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/build/src/libggml.so
