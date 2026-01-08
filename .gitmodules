@@ -4,3 +4,6 @@
 [submodule "third_party/xxHash"]
 	path = third_party/xxHash
 	url = https://github.com/Cyan4973/xxHash.git
+[submodule "third_party/tokenizers-cpp"]
+	path = third_party/tokenizers-cpp
+	url = https://github.com/mlc-ai/tokenizers-cpp.git
