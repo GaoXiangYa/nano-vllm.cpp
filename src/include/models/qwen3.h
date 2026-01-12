@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -16,6 +17,17 @@ struct Qwen3Hparams {
   static constexpr int32_t n_embd = 1024;
   static constexpr int32_t n_embd_head = 128;
   static constexpr float rms_eps = 1e-6;
+};
+
+struct Qwen3Vocab {
+  using id = int32_t;
+  using token = std::string;
+
+  std::unordered_map<token, id> token_to_id;
+  std::unordered_map<id, token> id_to_token;
+  std::vector<token> special_tokens;
+
+  void AddSpecialToken(const token& token);
 };
 
 struct Qwen3Layer {
@@ -43,6 +55,8 @@ class Qwen3Model {
 public:
   explicit Qwen3Model(const std::string& model_path);
 
+  void BuildGraph();
+
 private:
   Qwen3Hparams hparams;
 
@@ -51,6 +65,7 @@ private:
   struct ggml_tensor* output_norm = nullptr;
 
   std::vector<Qwen3Layer> layers;
+  struct ggml_cgraph* compute_graph = nullptr;
 
   ggml_backend_t backend = nullptr;
   ggml_backend_buffer_t buffer_w;
