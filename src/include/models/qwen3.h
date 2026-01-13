@@ -1,13 +1,15 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml.h"
-
+#include "safetensors.hh"
+#include "tokenizers_cpp.h"
 namespace models {
 
 struct Qwen3Hparams {
@@ -58,18 +60,22 @@ public:
   void BuildGraph();
 
 private:
-  Qwen3Hparams hparams;
+  Qwen3Hparams hparams_;
+  std::unique_ptr<tokenizers::Tokenizer> tokenizer_;
+  std::unique_ptr<safetensors::safetensors_t> safetensors_;
 
-  struct ggml_tensor* tok_embd = nullptr;
-  struct ggml_tensor* output = nullptr;
-  struct ggml_tensor* output_norm = nullptr;
+  struct ggml_tensor* tok_embd_ = nullptr;
+  struct ggml_tensor* output_ = nullptr;
+  struct ggml_tensor* output_norm_ = nullptr;
 
-  std::vector<Qwen3Layer> layers;
-  struct ggml_cgraph* compute_graph = nullptr;
+  struct ggml_context* ctx_w = nullptr;
 
-  ggml_backend_t backend = nullptr;
-  ggml_backend_buffer_t buffer_w;
-  ggml_backend_buffer_t buffer_kv;
+  std::vector<Qwen3Layer> layers_;
+  struct ggml_cgraph* compute_graph_ = nullptr;
+
+  ggml_backend_t backend_ = nullptr;
+  ggml_backend_buffer_t buffer_w_;
+  ggml_backend_buffer_t buffer_kv_;
 };
 
 }  // namespace models
