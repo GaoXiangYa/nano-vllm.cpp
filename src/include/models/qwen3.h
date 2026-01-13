@@ -34,23 +34,23 @@ struct Qwen3Vocab {
 
 struct Qwen3Layer {
   // normalization
-  struct ggml_tensor* attn_norm = nullptr;
-  struct ggml_tensor* attn_q_norm = nullptr;
-  struct ggml_tensor* attn_k_norm = nullptr;
+  struct ggml_tensor* attn_norm = nullptr;    // input_layernorm
+  struct ggml_tensor* attn_q_norm = nullptr;  // q_norm
+  struct ggml_tensor* attn_k_norm = nullptr;  // k_norm
 
   // attention
-  struct ggml_tensor* wq = nullptr;
-  struct ggml_tensor* wk = nullptr;
-  struct ggml_tensor* wv = nullptr;
-  struct ggml_tensor* wo = nullptr;
+  struct ggml_tensor* wq = nullptr;  // q_proj
+  struct ggml_tensor* wk = nullptr;  // k_proj
+  struct ggml_tensor* wv = nullptr;  // v_proj
+  struct ggml_tensor* wo = nullptr;  // o_proj
 
   // normalization
-  struct ggml_tensor* ffn_norm = nullptr;
+  struct ggml_tensor* ffn_norm = nullptr;  // post_attention_layernorm
 
   // ff
-  struct ggml_tensor* ffn_gate = nullptr;  // w1
-  struct ggml_tensor* ffn_down = nullptr;  // w2
-  struct ggml_tensor* ffn_up = nullptr;    // w3
+  struct ggml_tensor* ffn_gate = nullptr;  // w1, gate_proj
+  struct ggml_tensor* ffn_down = nullptr;  // w2, down_proj
+  struct ggml_tensor* ffn_up = nullptr;    // w3, up_proj
 };
 
 class Qwen3Model {
@@ -76,6 +76,8 @@ private:
   ggml_backend_t backend_ = nullptr;
   ggml_backend_buffer_t buffer_w_;
   ggml_backend_buffer_t buffer_kv_;
+
+  std::unordered_map<std::string, struct ggml_tensor*> tensors_;
 };
 
 }  // namespace models

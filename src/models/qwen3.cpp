@@ -8,6 +8,12 @@
 #include "ggml.h"
 #include "safetensors.hh"
 #include "tokenizers_cpp.h"
+
+#ifdef USE_CUDA
+#include "ggml-cuda.h"
+#endif
+
+#include "ggml-cpu.h"
 namespace models {
 
 Qwen3Model::Qwen3Model(const std::string& model_path) {
@@ -23,7 +29,7 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
 
   tokenizer_ = tokenizers::Tokenizer::FromBlobJSON(tokenizer_path.c_str());
   std::string warn, err;
-  auto ret = safetensors::load_from_file(safetensors_path.c_str(),
+  auto ret = safetensors::mmap_from_file(safetensors_path.c_str(),
                                          safetensors_.get(), &warn, &err);
 
   if (warn.size()) {
@@ -54,6 +60,22 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
     }
   }
 
-  
+#ifdef USE_CUDA
+  this->backend_ = ggml_backend_cuda_init(0);
+#endif
+  if (this->backend_ == nullptr) {
+    std::cerr << std::format("{}: using CPU backend!\n",
+                             std::source_location::current().function_name());
+    this->backend_ = ggml_backend_cpu_init();
+  }
+  if (this->backend_ == nullptr) {
+    throw std::runtime_error("Failed to initialize any ggml backend!");
+  }
+
+  auto size = safetensors_->tensors.size();
+  for (size_t i = 2; i < size; ++ i) {
+    auto key = safetensors_->tensors.keys()[i];
+    
+  }
 }
 }  // namespace models
