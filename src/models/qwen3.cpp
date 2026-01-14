@@ -241,4 +241,22 @@ Qwen3Model::~Qwen3Model() {
   ggml_backend_buffer_free(this->buffer_kv_);
   ggml_backend_free(this->backend_);
 }
+
+void Qwen3Model::Reset() {
+  static size_t buf_size = ggml_tensor_overhead() * kQwen3MaxNodes +
+                           ggml_graph_overhead_custom(kQwen3MaxNodes, false);
+  this->buf_compute_meta.resize(buf_size);
+  struct ggml_init_params params = {
+      buf_size,
+      buf_compute_meta.data(),
+      true,
+  };
+  ctx_compute = ggml_init(params);
+  this->compute_graph_ =
+      ggml_new_graph_custom(ctx_compute, kQwen3MaxNodes, false);
+}
+
+void Qwen3Model::BuildGraph(const int n_past, const int n_tokens) {
+  Reset();
+}
 }  // namespace models

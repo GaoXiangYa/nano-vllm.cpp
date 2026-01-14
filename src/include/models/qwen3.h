@@ -91,9 +91,16 @@ public:
   }
 
 private:
+  void Reset();
+
+private:
+  static constexpr int kQwen3MaxNodes = 2488;
   Qwen3Hparams hparams_;
   std::unique_ptr<tokenizers::Tokenizer> tokenizer_;
   std::unique_ptr<safetensors::safetensors_t> safetensors_;
+
+  // memory buffers used to evaluate the model
+  std::vector<uint8_t> buf_compute_meta;
 
   struct ggml_tensor* tok_embd_ = nullptr;
   struct ggml_tensor* output_ = nullptr;
@@ -104,6 +111,7 @@ private:
 
   struct ggml_context* ctx_w = nullptr;
   struct ggml_context* ctx_kv = nullptr;
+  struct ggml_context* ctx_compute = nullptr;
 
   std::vector<Qwen3Layer> layers_;
   struct ggml_cgraph* compute_graph_ = nullptr;
