@@ -231,4 +231,14 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
                              static_cast<float>(total_size) / kMB);
   }
 }
+
+Qwen3Model::~Qwen3Model() {
+  ggml_free(this->ctx_w);
+  ggml_free(this->ctx_kv);
+
+  ggml_gallocr_free(this->allocr_);
+  ggml_backend_buffer_free(this->buffer_w_);
+  ggml_backend_buffer_free(this->buffer_kv_);
+  ggml_backend_free(this->backend_);
+}
 }  // namespace models

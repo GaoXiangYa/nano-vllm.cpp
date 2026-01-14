@@ -78,8 +78,13 @@ struct Qwen3Layer {
 class Qwen3Model {
 public:
   explicit Qwen3Model(const std::string& model_path);
+  Qwen3Model(const Qwen3Model& other) = delete;
+  Qwen3Model& operator=(const Qwen3Model& other) = delete;
+  Qwen3Model(Qwen3Model&& other) = delete;
+  Qwen3Model& operator=(Qwen3Model&& other) = delete;
+  ~Qwen3Model();
 
-  void BuildGraph();
+  void BuildGraph(const int n_past, const int n_tokens);
 
   const std::unique_ptr<tokenizers::Tokenizer>& GetTokenizer() const {
     return tokenizer_;
@@ -103,9 +108,11 @@ private:
   std::vector<Qwen3Layer> layers_;
   struct ggml_cgraph* compute_graph_ = nullptr;
 
+  ggml_gallocr_t allocr_ = nullptr;
+
   ggml_backend_t backend_ = nullptr;
-  ggml_backend_buffer_t buffer_w_;
-  ggml_backend_buffer_t buffer_kv_;
+  ggml_backend_buffer_t buffer_w_ = nullptr;
+  ggml_backend_buffer_t buffer_kv_ = nullptr;
 
   std::unordered_map<std::string, struct ggml_tensor*> tensors_;
 };
