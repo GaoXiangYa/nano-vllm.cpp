@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -11,6 +12,20 @@
 #include "safetensors.hh"
 #include "tokenizers_cpp.h"
 namespace models {
+
+struct TensorKeyOffset {
+  static constexpr size_t kAttnNorm = 0;
+  static constexpr size_t kFfnDown = 1;
+  static constexpr size_t kFfnGate = 2;
+  static constexpr size_t kFfnUp = 3;
+  static constexpr size_t kFfnNorm = 4;
+  static constexpr size_t kAttnKNorm = 5;
+  static constexpr size_t kWk = 6;
+  static constexpr size_t kWo = 7;
+  static constexpr size_t kAttnQNorm = 8;
+  static constexpr size_t kWq = 9;
+  static constexpr size_t kWv = 10;
+};
 
 struct Qwen3Hparams {
   static constexpr int32_t n_vocab = 151936;
@@ -65,6 +80,10 @@ public:
   explicit Qwen3Model(const std::string& model_path);
 
   void BuildGraph();
+
+  const std::unique_ptr<tokenizers::Tokenizer>& GetTokenizer() const {
+    return tokenizer_;
+  }
 
 private:
   Qwen3Hparams hparams_;

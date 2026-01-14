@@ -1,12 +1,14 @@
 #include "models/qwen3.h"
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <iostream>
 #include <source_location>
 #include <stdexcept>
 #include "ggml-alloc.h"
+#include "ggml-backend.h"
 #include "ggml.h"
 #include "safetensors.hh"
 #include "tokenizers_cpp.h"
@@ -46,6 +48,7 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
   const int32_t n_tensors = 1 + 2 + 11 * hparams_.n_layer;
   const int32_t max_tensors = n_tensors + 1 + 2 * hparams_.n_layer;
   const auto ctx_size = ggml_tensor_overhead() * max_tensors;
+  constexpr float kMB = 1024.0 * 1024.0;
 
   // create model context
   {
@@ -86,10 +89,16 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
     const int kTensorCount = 11;
     auto& ctx = this->ctx_w;
     this->layers_.resize(hparams_.n_layer);
+
+    this->output_ = ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, n_embd, n_vocab);
+    this->tensors_[safetensors_->tensors.keys()[0]] = this->output_;
+    this->tok_embd_ = ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, n_embd, n_vocab);
+    this->tensors_[safetensors_->tensors.keys()[1]] = this->tok_embd_;
+
     for (size_t i = 2; i < size - 1; i += kTensorCount) {
       size_t layer_idx = i / kTensorCount;
       this->layers_[layer_idx].attn_norm =
-          ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, n_embd, hparams_.n_vocab);
+          ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, n_embd, n_vocab);
 
       this->layers_[layer_idx].ffn_down =
           ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, n_ff, n_embd);
@@ -118,34 +127,43 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
       this->layers_[layer_idx].wv =
           ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, n_embd, n_embd_gqa);
 
-      this->tensors_[safetensors_->tensors.keys()[i]] =
+      this->tensors_[safetensors_->tensors
+                         .keys()[i + TensorKeyOffset::kAttnNorm]] =
           this->layers_[layer_idx].attn_norm;
 
-      this->tensors_[safetensors_->tensors.keys()[i + 1]] =
+      this->tensors_[safetensors_->tensors
+                         .keys()[i + TensorKeyOffset::kFfnDown]] =
           this->layers_[layer_idx].ffn_down;
-      this->tensors_[safetensors_->tensors.keys()[i + 2]] =
+      this->tensors_[safetensors_->tensors
+                         .keys()[i + TensorKeyOffset::kFfnGate]] =
           this->layers_[layer_idx].ffn_gate;
-      this->tensors_[safetensors_->tensors.keys()[i + 3]] =
+      this->tensors_[safetensors_->tensors
+                         .keys()[i + TensorKeyOffset::kFfnUp]] =
           this->layers_[layer_idx].ffn_up;
-      this->tensors_[safetensors_->tensors.keys()[i + 4]] =
+      this->tensors_[safetensors_->tensors
+                         .keys()[i + TensorKeyOffset::kFfnNorm]] =
           this->layers_[layer_idx].ffn_norm;
 
-      this->tensors_[safetensors_->tensors.keys()[i + 5]] =
+      this->tensors_[safetensors_->tensors
+                         .keys()[i + TensorKeyOffset::kAttnKNorm]] =
           this->layers_[layer_idx].attn_k_norm;
-      this->tensors_[safetensors_->tensors.keys()[i + 6]] =
+      this->tensors_[safetensors_->tensors.keys()[i + TensorKeyOffset::kWk]] =
           this->layers_[layer_idx].wk;
 
-      this->tensors_[safetensors_->tensors.keys()[i + 7]] =
+      this->tensors_[safetensors_->tensors.keys()[i + TensorKeyOffset::kWo]] =
           this->layers_[layer_idx].wo;
 
-      this->tensors_[safetensors_->tensors.keys()[i + 8]] =
+      this->tensors_[safetensors_->tensors
+                         .keys()[i + TensorKeyOffset::kAttnQNorm]] =
           this->layers_[layer_idx].attn_q_norm;
 
-      this->tensors_[safetensors_->tensors.keys()[i + 9]] =
+      this->tensors_[safetensors_->tensors.keys()[i + TensorKeyOffset::kWq]] =
           this->layers_[layer_idx].wq;
-      this->tensors_[safetensors_->tensors.keys()[i + 10]] =
+      this->tensors_[safetensors_->tensors.keys()[i + TensorKeyOffset::kWv]] =
           this->layers_[layer_idx].wv;
     }
+    this->output_norm_ = ggml_new_tensor_1d(ctx, GGML_TYPE_BF16, n_embd);
+    this->tensors_[safetensors_->tensors.keys()[size - 1]] = this->output_norm_;
   }
 
   // allocate the model tensors in a backend buffer
@@ -156,17 +174,61 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
   {
     size_t n_tensors = 2;
     ctx = ggml_init({ggml_tensor_overhead() * n_tensors, nullptr, true});
+
+    const auto n_embd = this->hparams_.n_embd;
+    const auto n_layer = this->hparams_.n_layer;
+    const auto n_ctx = this->hparams_.n_ctx;
+    const auto n_mem = n_layer * n_ctx;
+    const auto n_elements = n_embd * n_mem;
+
+    this->memory_k = ggml_new_tensor_1d(ctx, GGML_TYPE_BF16, n_elements);
+    this->memory_v = ggml_new_tensor_1d(ctx, GGML_TYPE_BF16, n_elements);
+
+    this->buffer_kv_ = ggml_backend_alloc_ctx_tensors(ctx, this->backend_);
+    const size_t memory_size = ggml_backend_buffer_get_size(this->buffer_kv_);
+    std::cout << std::format("{}: memory size = {:8.2f} MB, n_mem = {}\n",
+                             std::source_location::current().function_name(),
+                             static_cast<float>(memory_size) / kMB, n_mem);
   }
 
-  const auto n_embd = this->hparams_.n_embd;
-  const auto n_layer = this->hparams_.n_layer;
-  const auto n_ctx = this->hparams_.n_ctx;
-  const auto n_mem = n_layer * n_ctx;
-  const auto n_elements = n_embd * n_mem;
+  // load weights data
+  {
+    size_t total_size = 0;
+    std::span<std::byte> databuffer{
+        safetensors_->mmaped
+            ? std::bit_cast<std::byte*>(safetensors_->databuffer_addr)
+            : std::bit_cast<std::byte*>(safetensors_->storage.data()),
+        safetensors_->databuffer_size};
 
-  this->memory_k = ggml_new_tensor_1d(ctx, GGML_TYPE_BF16, n_elements);
-  this->memory_v = ggml_new_tensor_1d(ctx, GGML_TYPE_BF16, n_elements);
+    auto safetensor_size = safetensors_->tensors.size();
+    for (size_t i = 0; i < safetensor_size; ++i) {
+      const auto& tensor_name = safetensors_->tensors.keys()[i];
+      if (!this->tensors_.contains(tensor_name)) {
+        throw std::runtime_error(
+            "Unknown tensor name: " + tensor_name +
+            std::source_location::current().function_name() + "\n");
+      }
 
-  this->buffer_kv_ = ggml_backend_alloc_ctx_tensors(ctx, this->backend_);
+      auto tensor = this->tensors_[tensor_name];
+      safetensors::tensor_t stensor;
+      safetensors_->tensors.at(tensor_name, &stensor);
+
+      auto nitems = safetensors::get_shape_size(stensor);
+      auto item_bytes = safetensors::get_dtype_bytes(stensor.dtype);
+      auto tensor_data = databuffer.data() + stensor.data_offsets[0];
+
+      if (ggml_backend_buffer_is_host(this->buffer_w_)) {
+        std::memcpy(tensor->data, tensor_data, ggml_nbytes(tensor));
+      } else {
+        ggml_backend_tensor_set(tensor, tensor_data, 0, ggml_nbytes(tensor));
+      }
+
+      total_size += ggml_nbytes(tensor);
+    }
+
+    std::cout << std::format("{}: loaded model size = {:8.2f} MB\n",
+                             std::source_location::current().function_name(),
+                             static_cast<float>(total_size) / kMB);
+  }
 }
 }  // namespace models
