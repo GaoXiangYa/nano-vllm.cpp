@@ -15,9 +15,16 @@ namespace models {
 struct Qwen3Hparams {
   static constexpr int32_t n_vocab = 151936;
   static constexpr int32_t n_layer = 28;
+  static constexpr int32_t n_head = 16;
   static constexpr int32_t n_ctx = 40960;
   static constexpr int32_t n_embd = 1024;
+  static constexpr int32_t n_embd_gqa = 1024;
+  static constexpr int32_t n_embd_k_gqa = 1024;
+  static constexpr int32_t n_embd_v_gqa = 1024;
   static constexpr int32_t n_embd_head = 128;
+  static constexpr int32_t n_embd_head_k = 128;
+  static constexpr int32_t n_embd_head_v = 128;
+  static constexpr int32_t n_ff = 3072;
   static constexpr float rms_eps = 1e-6;
 };
 
@@ -68,7 +75,11 @@ private:
   struct ggml_tensor* output_ = nullptr;
   struct ggml_tensor* output_norm_ = nullptr;
 
+  struct ggml_tensor* memory_k = nullptr;
+  struct ggml_tensor* memory_v = nullptr;
+
   struct ggml_context* ctx_w = nullptr;
+  struct ggml_context* ctx_kv = nullptr;
 
   std::vector<Qwen3Layer> layers_;
   struct ggml_cgraph* compute_graph_ = nullptr;
