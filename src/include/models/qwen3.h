@@ -43,6 +43,11 @@ struct Qwen3Hparams {
   static constexpr float rms_eps = 1e-6;
 };
 
+enum class Qwen3NormType {
+  Norm,
+  RmsNorm,
+};
+
 struct Qwen3Vocab {
   using id = int32_t;
   using token = std::string;
@@ -90,8 +95,17 @@ public:
     return tokenizer_;
   }
 
-private:
+public:
   void Reset();
+  ggml_tensor* BuildInputEmbedding(ggml_tensor* tok_emd, const int n_tokens);
+  ggml_tensor* BuildInputPosition();
+  ggml_tensor* BuildInputIds(const int n_output);
+  ggml_tensor* BuildNorm(ggml_tensor* input, ggml_tensor* norm_weight,
+                         ggml_tensor* norm_bias,
+                         const Qwen3NormType& norm_type);
+  ggml_tensor* BuildFFN(ggml_tensor* input, ggml_tensor* ffn_up,
+                        ggml_tensor* ffn_gate, ggml_tensor* ffn_down);
+  ggml_tensor* BuildAttentionKV(const int n_tokens);
 
 private:
   static constexpr int kQwen3MaxNodes = 2488;

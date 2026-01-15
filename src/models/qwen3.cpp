@@ -256,7 +256,63 @@ void Qwen3Model::Reset() {
       ggml_new_graph_custom(ctx_compute, kQwen3MaxNodes, false);
 }
 
+ggml_tensor* Qwen3Model::BuildInputEmbedding(ggml_tensor* tok_emd,
+                                             const int n_tokens) {
+  auto embd = ggml_new_tensor_1d(this->ctx_compute, GGML_TYPE_I32, n_tokens);
+  ggml_set_input(embd);
+  auto cur = ggml_get_rows(this->ctx_compute, tok_emd, embd);
+  return cur;
+}
+
+ggml_tensor* Qwen3Model::BuildInputPosition() {
+  const int n_ctx = this->hparams_.n_ctx;
+  auto pos = ggml_new_tensor_1d(this->ctx_compute, GGML_TYPE_I32, n_ctx);
+  ggml_set_input(pos);
+  return pos;
+}
+
+ggml_tensor* Qwen3Model::BuildInputIds(const int n_output) {
+  auto ids = ggml_new_tensor_1d(this->ctx_compute, GGML_TYPE_I32, n_output);
+  ggml_set_input(ids);
+  return ids;
+}
+
+ggml_tensor* Qwen3Model::BuildNorm(ggml_tensor* input, ggml_tensor* norm_weight,
+                                   ggml_tensor* norm_bias,
+                                   const Qwen3NormType& norm_type) {
+  switch (norm_type) {
+    case Qwen3NormType::Norm:
+      input = ggml_norm(this->ctx_compute, input, this->hparams_.rms_eps);
+      break;
+    case Qwen3NormType::RmsNorm:
+      input = ggml_rms_norm(this->ctx_compute, input, this->hparams_.rms_eps);
+      break;
+    default:
+      throw std::runtime_error("Unsupported norm type!");
+  }
+  if (norm_weight) {
+    input = ggml_mul(this->ctx_compute, input, norm_weight);
+  }
+  if (norm_bias) {
+    input = ggml_add(this->ctx_compute, input, norm_bias);
+  }
+
+  return input;
+}
+
+ggml_tensor* Qwen3Model::BuildFFN(ggml_tensor* input, ggml_tensor* ffn_up,
+                                  ggml_tensor* ffn_gate,
+                                  ggml_tensor* ffn_down) {
+  auto tmp = ggml_mul_mat(this->ctx_compute, ffn_up, input);
+  input = ggml_mul_mat(this->ctx_compute, ffn_gate, input);
+  input = ggml_swiglu_split(this->ctx_compute, input, tmp);
+  input = ggml_mul(this->ctx_compute, input, tmp);
+  input = ggml_mul_mat(this->ctx_compute, ffn_down, input);
+  return input;
+}
+
 void Qwen3Model::BuildGraph(const int n_past, const int n_tokens) {
   Reset();
 }
+
 }  // namespace models
