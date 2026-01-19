@@ -106,6 +106,8 @@ public:
   ggml_tensor* BuildFFN(ggml_tensor* input, ggml_tensor* ffn_up,
                         ggml_tensor* ffn_gate, ggml_tensor* ffn_down);
   ggml_tensor* BuildAttentionKV(const int n_tokens);
+  ggml_tensor* BuildAttention(ggml_tensor* input, ggml_tensor* q_cur,
+                              ggml_tensor* k_cur, ggml_tensor* v_cur);
 
 private:
   static constexpr int kQwen3MaxNodes = 2488;
@@ -122,6 +124,8 @@ private:
 
   struct ggml_tensor* memory_k = nullptr;
   struct ggml_tensor* memory_v = nullptr;
+  struct ggml_tensor* memory_kq_mask = nullptr;
+  struct ggml_tensor* memory_kq_mask_cnv = nullptr;
 
   struct ggml_context* ctx_w = nullptr;
   struct ggml_context* ctx_kv = nullptr;

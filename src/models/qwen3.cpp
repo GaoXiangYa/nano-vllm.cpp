@@ -7,6 +7,7 @@
 #include <iostream>
 #include <source_location>
 #include <stdexcept>
+#include "config.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -309,6 +310,40 @@ ggml_tensor* Qwen3Model::BuildFFN(ggml_tensor* input, ggml_tensor* ffn_up,
   input = ggml_mul(this->ctx_compute, input, tmp);
   input = ggml_mul_mat(this->ctx_compute, ffn_down, input);
   return input;
+}
+
+ggml_tensor* Qwen3Model::BuildAttentionKV(const int n_tokens) {
+  this->memory_k =
+      ggml_new_tensor_1d(this->ctx_compute, GGML_TYPE_I64, n_tokens);
+  ggml_set_input(this->memory_k);
+  this->memory_v =
+      ggml_new_tensor_1d(this->ctx_compute, GGML_TYPE_I64, n_tokens);
+  ggml_set_input(this->memory_v);
+
+  // TODO: get kv cache size from config
+  const auto n_kv = 256;
+  this->memory_kq_mask = ggml_new_tensor_4d(this->ctx_compute, GGML_TYPE_F32,
+                                            n_kv, n_tokens, 1, 1);
+  ggml_set_input(this->memory_kq_mask);
+  this->memory_kq_mask_cnv =
+      ggml_cast(this->ctx_compute, this->memory_kq_mask, GGML_TYPE_F16);
+  return this->memory_kq_mask_cnv;
+}
+
+ggml_tensor* Qwen3Model::BuildAttention(ggml_tensor* input, ggml_tensor* q_cur,
+                                        ggml_tensor* k_cur,
+                                        ggml_tensor* v_cur) {
+  ggml_build_forward_expand(this->compute_graph_, q_cur);
+  ggml_build_forward_expand(this->compute_graph_, k_cur);
+  ggml_build_forward_expand(this->compute_graph_, v_cur);
+
+  // store to kv cache memory
+  {
+    ggml_build_forward_expand(this->compute_graph_, ggml_cpy(this->ctx_compute, k_cur, this->memory_k));
+    ggml_build_forward_expand(this->compute_graph_, ggml_cpy(this->ctx_compute, v_cur, this->memory_v));
+  }
+
+  return nullptr;
 }
 
 void Qwen3Model::BuildGraph(const int n_past, const int n_tokens) {
