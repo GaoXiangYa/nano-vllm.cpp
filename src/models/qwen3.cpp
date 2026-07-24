@@ -330,6 +330,7 @@ ggml_tensor* Qwen3Model::BuildAttentionKV(const int n_tokens) {
   return this->memory_kq_mask_cnv;
 }
 
+// TODO: implement build kv and attention
 ggml_tensor* Qwen3Model::BuildAttention(ggml_tensor* input, ggml_tensor* q_cur,
                                         ggml_tensor* k_cur,
                                         ggml_tensor* v_cur) {
@@ -339,15 +340,96 @@ ggml_tensor* Qwen3Model::BuildAttention(ggml_tensor* input, ggml_tensor* q_cur,
 
   // store to kv cache memory
   {
-    ggml_build_forward_expand(this->compute_graph_, ggml_cpy(this->ctx_compute, k_cur, this->memory_k));
-    ggml_build_forward_expand(this->compute_graph_, ggml_cpy(this->ctx_compute, v_cur, this->memory_v));
+    ggml_build_forward_expand(this->compute_graph_,
+                              ggml_cpy(this->ctx_compute, k_cur,
+                                       this->memory_k));
+    ggml_build_forward_expand(this->compute_graph_,
+                              ggml_cpy(this->ctx_compute, v_cur,
+                                       this->memory_v));
   }
 
   return nullptr;
 }
 
+ggml_tensor* Qwen3Model::BuildOutputIds(const int n_tokens) {
+  auto output_ids =
+      ggml_new_tensor_1d(this->ctx_compute, GGML_TYPE_I32, n_tokens);
+  ggml_set_input(output_ids);
+  return output_ids;
+}
+
 void Qwen3Model::BuildGraph(const int n_past, const int n_tokens) {
   Reset();
+
+  // Build input tensors
+  ggml_tensor* cur = nullptr;
+  auto inpL = BuildInputEmbedding(this->tok_embd_, n_tokens);
+  auto input_pos = BuildInputPosition();
+  auto input_attn = BuildAttentionKV(n_tokens);
+  auto inp_out_ids = BuildOutputIds(n_tokens);
+  const int n_rot = 128;
+
+  for (int il = 0; il < this->hparams_.n_layer; ++il) {
+    auto inpSA = inpL;
+
+    cur = BuildNorm(inpSA, this->layers_[il].attn_norm, nullptr,
+                    Qwen3NormType::RmsNorm);
+    // self-attention
+    {
+      auto q_cur = ggml_mul_mat(this->ctx_compute, this->layers_[il].wq, cur);
+      auto k_cur = ggml_mul_mat(this->ctx_compute, this->layers_[il].wk, cur);
+      auto v_cur = ggml_mul_mat(this->ctx_compute, this->layers_[il].wv, cur);
+
+      q_cur = ggml_reshape_3d(this->ctx_compute, q_cur, hparams_.n_embd_head,
+                              hparams_.n_head, n_tokens);
+      k_cur = ggml_reshape_3d(this->ctx_compute, k_cur, hparams_.n_embd_head,
+                              hparams_.n_head_kv, n_tokens);
+      v_cur = ggml_reshape_3d(this->ctx_compute, v_cur, hparams_.n_embd_head,
+                              hparams_.n_head_kv, n_tokens);
+
+      q_cur = BuildNorm(q_cur, this->layers_[il].attn_q_norm, nullptr,
+                        Qwen3NormType::RmsNorm);
+      q_cur = ggml_rope_ext(this->ctx_compute, q_cur, input_pos, nullptr, n_rot,
+                            GGML_ROPE_TYPE_NEOX, hparams_.n_ctx,
+                            hparams_.rope_freq_base, hparams_.rope_freq_scale,
+                            hparams_.rope_ext_factor, hparams_.attn_factor,
+                            hparams_.beta_fast, hparams_.beta_slow);
+      k_cur = BuildNorm(k_cur, this->layers_[il].attn_k_norm, nullptr,
+                        Qwen3NormType::RmsNorm);
+      k_cur = ggml_rope_ext(this->ctx_compute, k_cur, input_pos, nullptr, n_rot,
+                            GGML_ROPE_TYPE_NEOX, hparams_.n_ctx,
+                            hparams_.rope_freq_base, hparams_.rope_freq_scale,
+                            hparams_.rope_ext_factor, hparams_.attn_factor,
+                            hparams_.beta_fast, hparams_.beta_slow);
+
+      cur = BuildAttention(inpSA, q_cur, k_cur, v_cur);
+    }
+
+    if (il == this->hparams_.n_layer - 1 && inp_out_ids != nullptr) {
+      cur = ggml_get_rows(this->ctx_compute, cur, inp_out_ids);
+      inpSA = ggml_get_rows(this->ctx_compute, inpSA, inp_out_ids);
+    }
+
+    // feed-forward network
+    {
+      auto ffn_inp = ggml_add(this->ctx_compute, cur, inpSA);
+      cur = BuildNorm(ffn_inp, this->layers_[il].ffn_norm, nullptr,
+                      Qwen3NormType::RmsNorm);
+      cur = BuildFFN(cur, this->layers_[il].ffn_up, this->layers_[il].ffn_gate,
+                     this->layers_[il].ffn_down);
+      cur = ggml_add(this->ctx_compute, cur, ffn_inp);
+      inpL = cur;
+    }
+  }
+
+  cur = inpL;
+  // output norm
+  cur = BuildNorm(cur, this->output_norm_, nullptr, Qwen3NormType::RmsNorm);
+  // output layer
+  cur = ggml_mul_mat(this->ctx_compute, this->output_, cur);
+  this->logits = cur;
+
+  ggml_build_forward_expand(this->compute_graph_, cur);
 }
 
 }  // namespace models

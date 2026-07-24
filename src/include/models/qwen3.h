@@ -31,6 +31,7 @@ struct Qwen3Hparams {
   static constexpr int32_t n_vocab = 151936;
   static constexpr int32_t n_layer = 28;
   static constexpr int32_t n_head = 16;
+  static constexpr int32_t n_head_kv = 16;
   static constexpr int32_t n_ctx = 40960;
   static constexpr int32_t n_embd = 1024;
   static constexpr int32_t n_embd_gqa = 1024;
@@ -40,6 +41,14 @@ struct Qwen3Hparams {
   static constexpr int32_t n_embd_head_k = 128;
   static constexpr int32_t n_embd_head_v = 128;
   static constexpr int32_t n_ff = 3072;
+
+  static constexpr float rope_freq_base = 100000;
+  static constexpr float rope_freq_scale = 1.0;
+  static constexpr float rope_ext_factor = 1.0;
+  static constexpr float attn_factor = 1.0;
+  static constexpr float beta_fast = 32.0;
+  static constexpr float beta_slow = 1.0;
+
   static constexpr float rms_eps = 1e-6;
 };
 
@@ -108,6 +117,7 @@ public:
   ggml_tensor* BuildAttentionKV(const int n_tokens);
   ggml_tensor* BuildAttention(ggml_tensor* input, ggml_tensor* q_cur,
                               ggml_tensor* k_cur, ggml_tensor* v_cur);
+  ggml_tensor* BuildOutputIds(const int n_tokens);
 
 private:
   static constexpr int kQwen3MaxNodes = 2488;
@@ -121,6 +131,7 @@ private:
   struct ggml_tensor* tok_embd_ = nullptr;
   struct ggml_tensor* output_ = nullptr;
   struct ggml_tensor* output_norm_ = nullptr;
+  struct ggml_tensor* logits = nullptr;
 
   struct ggml_tensor* memory_k = nullptr;
   struct ggml_tensor* memory_v = nullptr;
