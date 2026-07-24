@@ -28,28 +28,31 @@ struct TensorKeyOffset {
 };
 
 struct Qwen3Hparams {
-  static constexpr int32_t n_vocab = 151936;
-  static constexpr int32_t n_layer = 28;
-  static constexpr int32_t n_head = 16;
-  static constexpr int32_t n_head_kv = 16;
-  static constexpr int32_t n_ctx = 40960;
-  static constexpr int32_t n_embd = 1024;
-  static constexpr int32_t n_embd_gqa = 1024;
-  static constexpr int32_t n_embd_k_gqa = 1024;
-  static constexpr int32_t n_embd_v_gqa = 1024;
-  static constexpr int32_t n_embd_head = 128;
-  static constexpr int32_t n_embd_head_k = 128;
-  static constexpr int32_t n_embd_head_v = 128;
-  static constexpr int32_t n_ff = 3072;
+  int32_t n_vocab = 151936;
+  int32_t n_layer = 28;
+  int32_t n_head = 16;
+  int32_t n_head_kv = 8;    // GQA KV heads
+  int32_t n_ctx = 40960;
+  int32_t n_embd = 1024;
+  int32_t n_embd_gqa = 1024;     // = n_head_kv * n_embd_head
+  int32_t n_embd_k_gqa = 1024;
+  int32_t n_embd_v_gqa = 1024;
+  int32_t n_embd_head = 128;
+  int32_t n_embd_head_k = 128;
+  int32_t n_embd_head_v = 128;
+  int32_t n_ff = 3072;
 
-  static constexpr float rope_freq_base = 100000;
-  static constexpr float rope_freq_scale = 1.0;
-  static constexpr float rope_ext_factor = 1.0;
-  static constexpr float attn_factor = 1.0;
-  static constexpr float beta_fast = 32.0;
-  static constexpr float beta_slow = 1.0;
+  float rope_freq_base = 1000000.0f;
+  float rope_freq_scale = 1.0f;
+  float rope_ext_factor = 1.0f;
+  float attn_factor = 1.0f;
+  float beta_fast = 32.0f;
+  float beta_slow = 1.0f;
 
-  static constexpr float rms_eps = 1e-6;
+  float rms_eps = 1e-6f;
+
+  int32_t eos_token_id = -1;
+  int32_t bos_token_id = -1;
 };
 
 enum class Qwen3NormType {
@@ -98,30 +101,52 @@ public:
   Qwen3Model& operator=(Qwen3Model&& other) = delete;
   ~Qwen3Model();
 
-  void BuildGraph(const int n_past, const int n_tokens);
+  // Build the compute graph for processing n_tokens
+  void BuildPrefillGraph(int n_tokens, int cache_offset, int n_outputs = -1);
 
   const std::unique_ptr<tokenizers::Tokenizer>& GetTokenizer() const {
     return tokenizer_;
   }
 
+  // Execution helpers
+  bool AllocateGraph();
+  ggml_status GraphCompute();
+  void SetInputTensor(ggml_tensor* tensor, const void* data, size_t size);
+
+  struct ggml_cgraph* GetComputeGraph() const { return compute_graph_; }
+  ggml_tensor* GetLogits() const { return logits; }
+  const Qwen3Hparams& GetHparams() const { return hparams_; }
+  int GetEosTokenId() const { return hparams_.eos_token_id; }
+  ggml_gallocr_t GetAllocr() const { return allocr_; }
+  ggml_backend_t GetBackend() const { return backend_; }
+  ggml_context* GetComputeCtx() const { return ctx_compute; }
+
+  // KV cache read/write (outside graph, for runner)
+  void WriteKVToCache(int layer, int cache_pos,
+                      ggml_tensor* k_tensor, ggml_tensor* v_tensor);
+  void ReadKVFromCache(int layer, int cache_start, int n_tokens,
+                       void* k_out, void* v_out);
+
 public:
   void Reset();
   ggml_tensor* BuildInputEmbedding(ggml_tensor* tok_emd, const int n_tokens);
-  ggml_tensor* BuildInputPosition();
-  ggml_tensor* BuildInputIds(const int n_output);
+  ggml_tensor* BuildInputPosition(int n_positions);
+  ggml_tensor* BuildInputIds(int n_ids);
   ggml_tensor* BuildNorm(ggml_tensor* input, ggml_tensor* norm_weight,
                          ggml_tensor* norm_bias,
                          const Qwen3NormType& norm_type);
   ggml_tensor* BuildFFN(ggml_tensor* input, ggml_tensor* ffn_up,
                         ggml_tensor* ffn_gate, ggml_tensor* ffn_down);
-  ggml_tensor* BuildAttentionKV(const int n_tokens);
-  ggml_tensor* BuildAttention(ggml_tensor* input, ggml_tensor* q_cur,
-                              ggml_tensor* k_cur, ggml_tensor* v_cur);
-  ggml_tensor* BuildOutputIds(const int n_tokens);
+  ggml_tensor* BuildKQMask(int n_kv, int n_tokens, bool is_prefill);
+  ggml_tensor* BuildAttention(ggml_tensor* q_cur, ggml_tensor* k_cur,
+                              ggml_tensor* v_cur, ggml_tensor* mask);
+  ggml_tensor* BuildOutputNorm(ggml_tensor* input);
+  ggml_tensor* BuildOutputLayer(ggml_tensor* input);
 
 private:
   static constexpr int kQwen3MaxNodes = 2488;
   Qwen3Hparams hparams_;
+  void LoadConfigJson(const std::string& config_path);
   std::unique_ptr<tokenizers::Tokenizer> tokenizer_;
   std::unique_ptr<safetensors::safetensors_t> safetensors_;
 

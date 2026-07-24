@@ -18,7 +18,7 @@ Scheduler::Scheduler(const Config& config)
                                                   config.kvcache_block_size);
 }
 
-auto Scheduler::Schedule() {
+Scheduler::ScheduleResult Scheduler::Schedule() {
   // prefill
   std::vector<Sequence*> scheduled_seqs;
   size_t num_seqs = 0;

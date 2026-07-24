@@ -21,7 +21,8 @@ public:
 
   void Add(Sequence* seq) { this->waiting_.push_back(seq); }
 
-  auto Schedule();
+  using ScheduleResult = std::pair<std::vector<Sequence*>, bool>;
+  ScheduleResult Schedule();
 
   void Preempt(Sequence* seq);
 

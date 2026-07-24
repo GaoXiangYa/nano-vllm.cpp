@@ -20,7 +20,7 @@ Sequence::Sequence(const std::vector<size_t>& token_ids,
 }
 
 std::span<size_t> Sequence::GetTokenIds(size_t block_id) {
-  assert(block_id >= 0 && block_id < this->num_blocks_);
+  assert(block_id < this->GetNumBlocks());
   return std::span(
       this->token_ids_.begin() + static_cast<int64_t>(block_id * block_size_),
       this->token_ids_.begin() +

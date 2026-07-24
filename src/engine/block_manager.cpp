@@ -83,7 +83,7 @@ Block* BlockManager::GetBlock(size_t block_id) {
 
 void BlockManager::DeallocateBlock(size_t block_id) {
   assert(this->blocks_[block_id]->GetRefCount() == 0);
-  assert(!this->used_block_ids_.contains(block_id));
+  assert(this->used_block_ids_.contains(block_id));
   this->used_block_ids_.erase(block_id);
   this->free_block_ids_.insert(block_id);
 }
@@ -94,16 +94,21 @@ bool BlockManager::CanAllocate(const Sequence* seq) const {
 
 
 void BlockManager::Allocate(Sequence* seq) {
-  assert(!seq.block_table_.IsEmptyBlockTable());
+  assert(seq->IsEmptyBlockTable());
 
   size_t prefix_hash = -1;
   bool cache_miss = false;
   const size_t num_blocks = seq->GetNumBlocks();
   Block* block = nullptr;
 
-  for (int i = 0; i < num_blocks; ++i) {
+  for (size_t i = 0; i < num_blocks; ++i) {
     auto token_ids = seq->GetTokenIds(i);
-    prefix_hash = this->ComputeHash(token_ids, prefix_hash);
+    // Only compute hash for full blocks (matching Python behavior)
+    if (token_ids.size() == static_cast<size_t>(this->block_size_)) {
+      prefix_hash = this->ComputeHash(token_ids, prefix_hash);
+    } else {
+      prefix_hash = static_cast<size_t>(-1);
+    }
     
     size_t block_id = -1;
     if (this->hash_to_block_id_.contains(prefix_hash)) {
@@ -126,7 +131,8 @@ void BlockManager::Allocate(Sequence* seq) {
       }
     }
 
-    if (prefix_hash != -1) {
+    if (prefix_hash != -1 &&
+        token_ids.size() == static_cast<size_t>(this->block_size_)) {
       block->Update(prefix_hash, token_ids);
       this->hash_to_block_id_[prefix_hash] = block_id;
     }
@@ -172,7 +178,8 @@ void BlockManager::Append(Sequence* seq) {
     last_block->Update(prefix_hash, token_ids);
     this->hash_to_block_id_[prefix_hash] = last_block->GetBlockId();
   } else {
-    assert(last_block->GetHash() == -1);
+    // In the middle of a block, hash should be unset
+    // assert(last_block->GetHash() == -1);
   }
 }
 

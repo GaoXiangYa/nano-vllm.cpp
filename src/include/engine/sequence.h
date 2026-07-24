@@ -38,6 +38,10 @@ public:
 
   bool IsFinished() const { return this->status_ == SequenceStatus::FINISHED; }
 
+  int GetSeqId() const { return seq_id_; }
+
+  float GetTemperature() const { return temperature_; }
+
   size_t GetNumCompletionTokens() const {
     return this->num_tokens_ - this->num_prompt_tokens;
   }
