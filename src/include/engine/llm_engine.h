@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "chat_template.h"
 #include "config.h"
 #include "engine/sequence.h"
 #include "engine/model_runner.h"
@@ -34,11 +35,21 @@ public:
   std::vector<std::string> Generate(const std::vector<std::string>& prompts,
                                      SamplingParams params = SamplingParams());
 
+  // Chat: render messages with the model's chat template, then generate
+  std::string Chat(const std::vector<chat::ChatMessage>& messages,
+                   SamplingParams params = SamplingParams());
+
+  // Chat template family detected from tokenizer_config.json
+  chat::ChatTemplateType GetChatTemplateType() const {
+    return chat_template_type_;
+  }
+
 private:
   Config config_;
   std::unique_ptr<ModelRunner> model_runner_;
   std::unique_ptr<Scheduler> scheduler_;
   std::vector<std::unique_ptr<Sequence>> sequences_;
+  chat::ChatTemplateType chat_template_type_ = chat::ChatTemplateType::UNKNOWN;
 };
 
 }  // namespace engine

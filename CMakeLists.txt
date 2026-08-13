@@ -31,8 +31,9 @@ find_library(GGML_LIB ggml PATHS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/bu
 find_library(GGML_CPU_LIB ggml-cpu PATHS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/build/src REQUIRED)
 
 # --- main library ---
-file(GLOB SRC_FILES
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/**/*.cpp
+# CONFIGURE_DEPENDS: re-glob on every build so new source files are picked up
+file(GLOB_RECURSE SRC_FILES CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
 
 add_library(nano-vllm SHARED ${SRC_FILES})

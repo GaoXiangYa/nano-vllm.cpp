@@ -2,8 +2,12 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <regex>
 #include <vector>
+#include "chat_template.h"
 #include "config.h"
 #include "engine/model_runner.h"
 #include "engine/scheduler.h"
@@ -21,6 +25,21 @@ LLMEngine::LLMEngine(const std::string& model_path, Config config)
   int eos_id = model_runner_->GetEosToken();
   if (eos_id >= 0) {
     config_.eos = eos_id;
+  }
+
+  // Detect chat template from tokenizer_config.json
+  {
+    std::ifstream f(std::filesystem::path(model_path) / "tokenizer_config.json");
+    if (f.is_open()) {
+      std::string content((std::istreambuf_iterator<char>(f)),
+                          std::istreambuf_iterator<char>());
+      std::smatch m;
+      if (std::regex_search(content, m,
+                            std::regex("\"chat_template\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\""))) {
+        std::string tmpl = m[1].str();
+        chat_template_type_ = chat::DetectChatTemplate(tmpl);
+      }
+    }
   }
 
   // Compute KV cache block count from model's context length
@@ -116,6 +135,18 @@ std::vector<std::string> LLMEngine::Generate(
   }
 
   return decoded;
+}
+
+std::string LLMEngine::Chat(const std::vector<chat::ChatMessage>& messages,
+                            SamplingParams params) {
+  if (chat_template_type_ == chat::ChatTemplateType::UNKNOWN) {
+    throw std::runtime_error(
+        "No supported chat template found in tokenizer_config.json");
+  }
+  std::string prompt =
+      chat::ApplyChatTemplate(chat_template_type_, messages, true);
+  auto outputs = Generate({prompt}, params);
+  return outputs.empty() ? std::string() : outputs[0];
 }
 
 }  // namespace engine

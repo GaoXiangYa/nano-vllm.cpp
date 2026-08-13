@@ -1,20 +1,29 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include "chat_template.h"
 #include "config.h"
 #include "engine/llm_engine.h"
 
 int main(int argc, char* argv[]) {
   if (argc < 2) {
-    std::cerr << "Usage: " << argv[0] << " <model_path> [prompt]\n";
+    std::cerr << "Usage: " << argv[0] << " <model_path> [--chat] [prompt]\n";
     return 1;
   }
 
   std::string model_path = argv[1];
-  std::string prompt = (argc >= 3) ? argv[2] : "Hello, how are you?";
+  bool chat_mode = false;
+  std::string prompt = "Hello, how are you?";
+  for (int i = 2; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--chat") {
+      chat_mode = true;
+    } else {
+      prompt = arg;
+    }
+  }
 
   std::cout << "Loading model from: " << model_path << "\n";
-  std::cout << "Prompt: " << prompt << "\n\n";
 
   try {
     Config config;
@@ -29,10 +38,23 @@ int main(int argc, char* argv[]) {
     params.max_tokens = 64;
     params.repetition_penalty = 1.2f;
 
-    auto outputs = engine.Generate({prompt}, params);
-
-    for (size_t i = 0; i < outputs.size(); ++i) {
-      std::cout << "Output " << i << ": " << outputs[i] << "\n";
+    if (chat_mode) {
+      if (engine.GetChatTemplateType() == chat::ChatTemplateType::UNKNOWN) {
+        std::cerr << "No supported chat template found\n";
+        return 1;
+      }
+      std::vector<chat::ChatMessage> messages = {
+          {"user", prompt},
+      };
+      std::cout << "Prompt: " << prompt << "\n\n";
+      auto reply = engine.Chat(messages, params);
+      std::cout << "Reply: " << reply << "\n";
+    } else {
+      std::cout << "Prompt: " << prompt << "\n\n";
+      auto outputs = engine.Generate({prompt}, params);
+      for (size_t i = 0; i < outputs.size(); ++i) {
+        std::cout << "Output " << i << ": " << outputs[i] << "\n";
+      }
     }
   } catch (const std::exception& e) {
     std::cerr << "Error: " << e.what() << "\n";
