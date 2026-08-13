@@ -104,19 +104,18 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
     // output weight (lm_head)
     this->output_ =
         ggml_new_tensor_2d(this->ctx_w, GGML_TYPE_BF16, n_embd, n_vocab);
-    this->tensors_[safetensors_->tensors.keys()[0]] = this->output_;
+    this->tensors_["lm_head.weight"] = this->output_;
 
     // token embedding
     this->tok_embd_ =
         ggml_new_tensor_2d(this->ctx_w, GGML_TYPE_BF16, n_embd, n_vocab);
-    this->tensors_[safetensors_->tensors.keys()[1]] = this->tok_embd_;
+    this->tensors_["model.embed_tokens.weight"] = this->tok_embd_;
 
-    // Per-layer tensors
-    const int kPerLayerTensorCount = 11;
-    for (size_t i = 2; i < safetensors_->tensors.size() - 1;
-         i += kPerLayerTensorCount) {
-      size_t layer_idx = (i - 2) / kPerLayerTensorCount;
+    // Per-layer tensors (mapped by name, not by file order)
+    for (int layer_idx = 0; layer_idx < n_layer; ++layer_idx) {
       auto& layer = this->layers_[layer_idx];
+      const std::string prefix =
+          "model.layers." + std::to_string(layer_idx) + ".";
 
       layer.attn_norm =
           ggml_new_tensor_1d(this->ctx_w, GGML_TYPE_BF16, n_embd);
@@ -142,37 +141,24 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
       layer.wv = ggml_new_tensor_2d(this->ctx_w, GGML_TYPE_BF16, n_embd,
                                      n_embd_gqa);
 
-      this->tensors_[safetensors_->tensors
-                         .keys()[i + TensorKeyOffset::kAttnNorm]] =
-          layer.attn_norm;
-      this->tensors_[safetensors_->tensors
-                         .keys()[i + TensorKeyOffset::kFfnDown]] = layer.ffn_down;
-      this->tensors_[safetensors_->tensors
-                         .keys()[i + TensorKeyOffset::kFfnGate]] = layer.ffn_gate;
-      this->tensors_[safetensors_->tensors
-                         .keys()[i + TensorKeyOffset::kFfnUp]] = layer.ffn_up;
-      this->tensors_[safetensors_->tensors
-                         .keys()[i + TensorKeyOffset::kFfnNorm]] = layer.ffn_norm;
-      this->tensors_[safetensors_->tensors
-                         .keys()[i + TensorKeyOffset::kAttnKNorm]] =
-          layer.attn_k_norm;
-      this->tensors_[safetensors_->tensors.keys()[i + TensorKeyOffset::kWk]] =
-          layer.wk;
-      this->tensors_[safetensors_->tensors.keys()[i + TensorKeyOffset::kWo]] =
-          layer.wo;
-      this->tensors_[safetensors_->tensors
-                         .keys()[i + TensorKeyOffset::kAttnQNorm]] =
-          layer.attn_q_norm;
-      this->tensors_[safetensors_->tensors.keys()[i + TensorKeyOffset::kWq]] =
-          layer.wq;
-      this->tensors_[safetensors_->tensors.keys()[i + TensorKeyOffset::kWv]] =
-          layer.wv;
+      this->tensors_[prefix + "input_layernorm.weight"] = layer.attn_norm;
+      this->tensors_[prefix + "mlp.down_proj.weight"] = layer.ffn_down;
+      this->tensors_[prefix + "mlp.gate_proj.weight"] = layer.ffn_gate;
+      this->tensors_[prefix + "mlp.up_proj.weight"] = layer.ffn_up;
+      this->tensors_[prefix + "post_attention_layernorm.weight"] =
+          layer.ffn_norm;
+      this->tensors_[prefix + "self_attn.k_norm.weight"] = layer.attn_k_norm;
+      this->tensors_[prefix + "self_attn.k_proj.weight"] = layer.wk;
+      this->tensors_[prefix + "self_attn.o_proj.weight"] = layer.wo;
+      this->tensors_[prefix + "self_attn.q_norm.weight"] = layer.attn_q_norm;
+      this->tensors_[prefix + "self_attn.q_proj.weight"] = layer.wq;
+      this->tensors_[prefix + "self_attn.v_proj.weight"] = layer.wv;
     }
 
     // output norm
     this->output_norm_ =
         ggml_new_tensor_1d(this->ctx_w, GGML_TYPE_BF16, n_embd);
-    this->tensors_[safetensors_->tensors.keys().back()] = this->output_norm_;
+    this->tensors_["model.norm.weight"] = this->output_norm_;
   }
 
   // Allocate weight tensors in backend buffer
@@ -232,6 +218,7 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
     }
     std::cout << std::format("Loaded model size = {:8.2f} MB\n",
                              static_cast<float>(total_size) / kMB);
+
   }
 }
 
@@ -376,13 +363,8 @@ ggml_tensor* Qwen3Model::BuildAttention(ggml_tensor* q_cur,
   auto kq = ggml_flash_attn_ext(this->ctx_compute, q_cur, k_cur, v_cur, mask,
                                  scale, 0.0f, 0.0f);
 
-  // flash_attn output is permuted: [n_embd_head, n_tokens, n_head, ne3]
-  // We need [n_embd_head * n_head, n_tokens] for the output projection
-  // Permute to [n_embd_head * n_head, n_tokens] via reshape
-  // Current: [128, n_tokens, 16, 1] → target: [2048, n_tokens]
-  // Merge dims 0 and 2: ggml_permute(0, 2, 1, 3) → [128, 16, n_tokens, 1]
-  // then reshape to [2048, n_tokens]
-  kq = ggml_permute(this->ctx_compute, kq, 0, 2, 1, 3);
+  // res: [n_embd_v, n_head, n_batch] = [128, 16, n_tokens]
+  // Merge ne0 (head_dim) x ne1 (heads) -> [2048, n_tokens]
   kq = ggml_cont(this->ctx_compute, kq);
   kq = ggml_reshape_2d(this->ctx_compute, kq,
                         hparams_.n_embd_head * hparams_.n_head,
@@ -455,15 +437,16 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int /*cache_offset*/, int n_out
   // KQ mask for prefill: causal [n_tokens, n_tokens]
   auto mask = BuildKQMask(n_tokens, n_tokens, true);
 
-  // Qwen3 uses pre-norm with residual fusion:
-  // residual is ADDED to input BEFORE norm, not after the operation
-  ggml_tensor* residual = cur;  // for first layer, residual = embedding
+  // Qwen3 pre-norm residual fusion; first layer has no residual (None in Python)
+  ggml_tensor* residual = nullptr;
 
   for (int il = 0; il < hparams_.n_layer; ++il) {
     auto& layer = layers_[il];
 
-    // --- Input layernorm: add residual, then norm ---
-    cur = ggml_add(this->ctx_compute, cur, residual);
+    // --- Input layernorm: add residual (except first layer), then norm ---
+    if (residual != nullptr) {
+      cur = ggml_add(this->ctx_compute, cur, residual);
+    }
     auto attn_residual = cur;  // save for post-attention
     cur = BuildNorm(cur, layer.attn_norm, nullptr, Qwen3NormType::RmsNorm);
 
@@ -472,7 +455,8 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int /*cache_offset*/, int n_out
     auto k_cur = ggml_mul_mat(this->ctx_compute, layer.wk, cur);
     auto v_cur = ggml_mul_mat(this->ctx_compute, layer.wv, cur);
 
-    // Reshape for multi-head: [n_embd_head, n_head, n_tokens]
+    // Reshape to [head_dim, n_head, n_tokens]: matches raw memory layout,
+    // where each token's 2048-dim (16 heads x 128) is contiguous
     q_cur = ggml_reshape_3d(this->ctx_compute, q_cur, hparams_.n_embd_head,
                              hparams_.n_head, n_tokens);
     k_cur = ggml_reshape_3d(this->ctx_compute, k_cur, hparams_.n_embd_head,
@@ -480,22 +464,31 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int /*cache_offset*/, int n_out
     v_cur = ggml_reshape_3d(this->ctx_compute, v_cur, hparams_.n_embd_head,
                              hparams_.n_head_kv, n_tokens);
 
-    // Q/K norm + RoPE
+    // Q/K norm (acts on ne0=head_dim, layout-independent)
     q_cur = BuildNorm(q_cur, layer.attn_q_norm, nullptr,
                        Qwen3NormType::RmsNorm);
     k_cur = BuildNorm(k_cur, layer.attn_k_norm, nullptr,
                        Qwen3NormType::RmsNorm);
 
+    // RoPE: positions indexed by ne2=seq-len (see ggml-cpu/ops.cpp rope loop)
+    // Qwen3 uses rotate_half RoPE (pairs (i, i+n_dims/2)) = 0
     q_cur = ggml_rope_ext(this->ctx_compute, q_cur, pos, nullptr, n_rot,
-                           0, hparams_.n_ctx,
+                           GGML_ROPE_TYPE_NEOX, hparams_.n_ctx,
                            hparams_.rope_freq_base, hparams_.rope_freq_scale,
                            hparams_.rope_ext_factor, hparams_.attn_factor,
                            hparams_.beta_fast, hparams_.beta_slow);
     k_cur = ggml_rope_ext(this->ctx_compute, k_cur, pos, nullptr, n_rot,
-                           0, hparams_.n_ctx,
+                           GGML_ROPE_TYPE_NEOX, hparams_.n_ctx,
                            hparams_.rope_freq_base, hparams_.rope_freq_scale,
                            hparams_.rope_ext_factor, hparams_.attn_factor,
                            hparams_.beta_fast, hparams_.beta_slow);
+
+
+    // Permute to flash_attn layout [head_dim, n_tokens, n_head]
+    // (metadata-only op; strides carry the correct memory offsets)
+    q_cur = ggml_permute(this->ctx_compute, q_cur, 0, 2, 1, 3);
+    k_cur = ggml_permute(this->ctx_compute, k_cur, 0, 2, 1, 3);
+    v_cur = ggml_permute(this->ctx_compute, v_cur, 0, 2, 1, 3);
 
     // Attention with self K,V (causal mask)
     cur = BuildAttention(q_cur, k_cur, v_cur, mask);
@@ -514,6 +507,7 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int /*cache_offset*/, int n_out
 
     // FFN (no internal residual - handled by the norm above)
     cur = BuildFFN(cur, layer.ffn_up, layer.ffn_gate, layer.ffn_down);
+
   }
 
   // Extract output tokens from last layer

@@ -15,6 +15,7 @@ Sequence::Sequence(const std::vector<size_t>& token_ids,
       token_ids_(token_ids),
       num_prompt_tokens(token_ids.size()),
       temperature_(sampling_params.temperature),
+      repetition_penalty_(sampling_params.repetition_penalty),
       max_tokens_(sampling_params.max_tokens),
       ignore_eos_(sampling_params.ignore_eos) {
 }

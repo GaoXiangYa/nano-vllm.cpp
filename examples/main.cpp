@@ -25,8 +25,9 @@ int main(int argc, char* argv[]) {
     engine::LLMEngine engine(model_path, config);
 
     SamplingParams params;
-    params.temperature = 0.0f;  // greedy
-    params.max_tokens = 16;
+    params.temperature = 0.8f;
+    params.max_tokens = 64;
+    params.repetition_penalty = 1.2f;
 
     auto outputs = engine.Generate({prompt}, params);
 

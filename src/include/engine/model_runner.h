@@ -43,10 +43,11 @@ private:
 
   // Sampling: temperature + softmax + multinomial
   std::vector<int> Sample(const float* logits_data, int n_vocab, int n_seqs,
-                          const std::vector<float>& temperatures);
+                          const std::vector<float>& temperatures,
+                          const std::vector<Sequence*>& seqs);
 
 private:
-  Config& config_;
+  Config config_;
   std::unique_ptr<models::Qwen3Model> model_;
 };
 

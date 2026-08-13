@@ -42,6 +42,8 @@ public:
 
   float GetTemperature() const { return temperature_; }
 
+  float GetRepetitionPenalty() const { return repetition_penalty_; }
+
   size_t GetNumCompletionTokens() const {
     return this->num_tokens_ - this->num_prompt_tokens;
   }
@@ -87,6 +89,7 @@ private:
   size_t num_prompt_tokens;
   static inline std::atomic<int> counter_{0};
   float temperature_;
+  float repetition_penalty_;
   size_t max_tokens_;
   bool ignore_eos_;
 };

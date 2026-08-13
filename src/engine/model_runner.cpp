@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include "engine/sequence.h"
@@ -75,29 +76,6 @@ std::vector<int> ModelRunner::Run(const std::vector<Sequence*>& seqs,
   ggml_backend_tensor_get(logits_tensor, logits_data.data(), 0,
                           logits_data.size() * sizeof(float));
 
-  // Debug: show top-5 predictions for first step
-  if (!logits_data.empty()) {
-    std::vector<std::pair<float, int>> topk;
-    for (int i = 0; i < std::min(n_vocab, 10); ++i) topk.emplace_back(logits_data[i], i);
-    std::partial_sort(topk.begin(), topk.begin() + 5, topk.end(),
-                      [](auto& a, auto& b) { return a.first > b.first; });
-    // Now get actual top 5 from full vocab
-    topk.clear();
-    for (int i = 0; i < n_vocab; ++i) {
-      topk.emplace_back(logits_data[i], i);
-      if (topk.size() > 10) {
-        std::sort(topk.begin(), topk.end(), [](auto& a, auto& b) { return a.first > b.first; });
-        topk.resize(5);
-      }
-    }
-    std::sort(topk.begin(), topk.end(), [](auto& a, auto& b) { return a.first > b.first; });
-    std::cerr << "Top-5 tokens:";
-    for (auto& [val, tid] : topk) {
-      std::cerr << " " << tid << "(" << val << ")";
-    }
-    std::cerr << "\n";
-  }
-
   // Sample
   std::vector<float> temperatures;
   temperatures.reserve(seqs.size());
@@ -105,7 +83,7 @@ std::vector<int> ModelRunner::Run(const std::vector<Sequence*>& seqs,
     temperatures.push_back(seq->GetTemperature());
   }
 
-  return Sample(logits_data.data(), n_vocab, n_out, temperatures);
+  return Sample(logits_data.data(), n_vocab, n_out, temperatures, seqs);
 }
 
 void ModelRunner::PrepareInputs(const std::vector<Sequence*>& seqs,
@@ -198,7 +176,8 @@ void ModelRunner::FillKQMask(ggml_tensor* mask, int n_kv, int n_tokens,
 
 std::vector<int> ModelRunner::Sample(const float* logits_data, int n_vocab,
                                      int n_seqs,
-                                     const std::vector<float>& temperatures) {
+                                     const std::vector<float>& temperatures,
+                                     const std::vector<Sequence*>& seqs) {
   std::vector<int> tokens(static_cast<size_t>(n_seqs));
   static std::mt19937 rng(std::random_device{}());
 
@@ -206,6 +185,29 @@ std::vector<int> ModelRunner::Sample(const float* logits_data, int n_vocab,
     float temp = temperatures[static_cast<size_t>(s)];
     const float* row =
         logits_data + static_cast<size_t>(s) * static_cast<size_t>(n_vocab);
+
+    // Apply repetition penalty (vLLM convention: divide positive logits,
+    // multiply negative ones) for tokens seen in prompt + generated context
+    std::vector<float> penalized;
+    float penalty = seqs[static_cast<size_t>(s)]->GetRepetitionPenalty();
+    if (penalty > 1.0f) {
+      penalized.assign(row, row + n_vocab);
+      auto seen = seqs[static_cast<size_t>(s)]->GetPromptTokenIds();
+      auto gen = seqs[static_cast<size_t>(s)]->GetCompletionTokenIds();
+      for (auto tok : seen) {
+        if (tok < static_cast<size_t>(n_vocab)) {
+          float& v = penalized[tok];
+          v = v < 0.0f ? v * penalty : v / penalty;
+        }
+      }
+      for (auto tok : gen) {
+        if (tok < static_cast<size_t>(n_vocab)) {
+          float& v = penalized[tok];
+          v = v < 0.0f ? v * penalty : v / penalty;
+        }
+      }
+      row = penalized.data();
+    }
 
     if (temp < 1e-6f) {
       // Greedy
