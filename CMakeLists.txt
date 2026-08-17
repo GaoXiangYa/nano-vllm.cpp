@@ -27,8 +27,15 @@ target_include_directories(safetensors-cpp PUBLIC third_party/safetensors-cpp)
 add_subdirectory(third_party/tokenizers-cpp)
 
 # --- ggml ---
-find_library(GGML_LIB ggml PATHS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/build/src REQUIRED)
-find_library(GGML_CPU_LIB ggml-cpu PATHS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/build/src REQUIRED)
+set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "Disable ggml examples" FORCE)
+set(GGML_BUILD_TESTS OFF CACHE BOOL "Disable ggml tests" FORCE)
+
+if(USE_CUDA)
+  set(GGML_CUDA ON CACHE BOOL "ggml: use CUDA" FORCE)
+  find_package(CUDAToolkit REQUIRED)
+endif()
+
+add_subdirectory(third_party/ggml)
 
 # --- main library ---
 # CONFIGURE_DEPENDS: re-glob on every build so new source files are picked up
@@ -43,10 +50,7 @@ if(USE_CPU)
 endif()
 
 if(USE_CUDA)
-  find_package(CUDA REQUIRED)
   target_compile_definitions(nano-vllm PRIVATE USE_CUDA)
-  target_include_directories(nano-vllm PRIVATE ${CUDA_INCLUDE_DIRS})
-  target_link_libraries(nano-vllm PRIVATE ${CUDA_LIBRARIES})
 endif()
 
 target_include_directories(nano-vllm
@@ -59,8 +63,7 @@ target_include_directories(nano-vllm
 
 target_link_libraries(nano-vllm
   PRIVATE
-  ${GGML_LIB}
-  ${GGML_CPU_LIB}
+  ggml
   xxhash
   safetensors-cpp
   tokenizers_cpp
@@ -68,4 +71,3 @@ target_link_libraries(nano-vllm
 )
 
 add_subdirectory(examples)
-add_subdirectory(test)
