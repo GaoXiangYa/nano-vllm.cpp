@@ -24,8 +24,11 @@
 
 namespace models {
 
-Qwen3Model::Qwen3Model(const std::string& model_path, int n_ctx_total)
-    : n_ctx_total_(n_ctx_total) {
+Qwen3Model::Qwen3Model(const std::string& model_path, int n_ctx_total,
+                         int num_kvcache_blocks, int kvcache_block_size)
+    : n_ctx_total_(n_ctx_total),
+      num_kvcache_blocks_(num_kvcache_blocks),
+      kvcache_block_size_(kvcache_block_size) {
   std::filesystem::path path(model_path);
   if (!std::filesystem::exists(path)) {
     throw std::runtime_error("Model path does not exist: " + model_path);
@@ -33,6 +36,21 @@ Qwen3Model::Qwen3Model(const std::string& model_path, int n_ctx_total)
 
   // Load model hyperparameters from config.json
   LoadConfigJson((path / "config.json").string());
+
+  // If the caller did not specify a context size, use the model's own limit.
+  // The KV cache is paged by fixed-size blocks, so round the slot count up to
+  // a whole number of blocks.
+  if (n_ctx_total_ <= 0) {
+    n_ctx_total_ = hparams_.n_ctx;
+  }
+  if (kvcache_block_size_ <= 0) {
+    kvcache_block_size_ = 256;
+  }
+  if (num_kvcache_blocks_ <= 0) {
+    num_kvcache_blocks_ =
+        (n_ctx_total_ + kvcache_block_size_ - 1) / kvcache_block_size_;
+  }
+  n_ctx_total_ = num_kvcache_blocks_ * kvcache_block_size_;
 
   std::filesystem::path tokenizer_path = path / "tokenizer.json";
   std::filesystem::path safetensors_path = path / "model.safetensors";
@@ -165,12 +183,14 @@ Qwen3Model::Qwen3Model(const std::string& model_path, int n_ctx_total)
   // Allocate weight tensors in backend buffer
   this->buffer_w_ = ggml_backend_alloc_ctx_tensors(this->ctx_w, this->backend_);
 
-  // Allocate KV cache: [n_layer][n_ctx_total][n_embd_gqa]
+  // Allocate KV cache: [n_layer][num_blocks * block_size][n_embd_gqa].
+  // This is a paged flat buffer: a physical slot is block_id*block_size+offset.
   {
     const auto n_layer = this->hparams_.n_layer;
     const auto n_embd_gqa = this->hparams_.n_embd_k_gqa;
-    const size_t n_elements = static_cast<size_t>(n_layer) *
-                              static_cast<size_t>(n_ctx_total_) * n_embd_gqa;
+    const size_t n_slots = static_cast<size_t>(num_kvcache_blocks_) *
+                           static_cast<size_t>(kvcache_block_size_);
+    const size_t n_elements = static_cast<size_t>(n_layer) * n_slots * n_embd_gqa;
 
     struct ggml_init_params kv_params = {
         ggml_tensor_overhead() * 2,
@@ -374,31 +394,30 @@ ggml_tensor* Qwen3Model::BuildAttention(ggml_tensor* q_cur,
 }
 
 // KV cache helpers (outside graph, used by runner)
-// Layout: [n_layer][n_ctx_total][n_embd_gqa], BF16
-void Qwen3Model::WriteKVToCache(int layer, int base_pos, int pos,
-                                const void* k_data, const void* v_data,
-                                int n_tokens) {
+// Paged layout: [n_layer][num_blocks][block_size][n_embd_gqa] stored as one
+// flat BF16 buffer.  The caller passes the physical slot:
+//   slot = block_id * block_size + offset_within_block
+void Qwen3Model::WriteKVToCache(int layer, int slot,
+                                const void* k_data, const void* v_data) {
   const auto n_embd_gqa = hparams_.n_embd_k_gqa;
   const size_t offset =
-      (static_cast<size_t>(layer) * n_ctx_total_ + base_pos + pos) *
-      n_embd_gqa;
+      (static_cast<size_t>(layer) * n_ctx_total_ + slot) * n_embd_gqa;
   const size_t byte_offset = offset * ggml_type_size(GGML_TYPE_BF16);
   const size_t n_bytes =
-      static_cast<size_t>(n_tokens) * n_embd_gqa * ggml_type_size(GGML_TYPE_BF16);
+      static_cast<size_t>(n_embd_gqa) * ggml_type_size(GGML_TYPE_BF16);
 
   ggml_backend_tensor_set(memory_k, k_data, byte_offset, n_bytes);
   ggml_backend_tensor_set(memory_v, v_data, byte_offset, n_bytes);
 }
 
-void Qwen3Model::ReadKVFromCache(int layer, int base_pos, int start, int n_tokens,
+void Qwen3Model::ReadKVFromCache(int layer, int slot,
                                  void* k_out, void* v_out) {
   const auto n_embd_gqa = hparams_.n_embd_k_gqa;
   const size_t offset =
-      (static_cast<size_t>(layer) * n_ctx_total_ + base_pos + start) *
-      n_embd_gqa;
+      (static_cast<size_t>(layer) * n_ctx_total_ + slot) * n_embd_gqa;
   const size_t byte_offset = offset * ggml_type_size(GGML_TYPE_BF16);
   const size_t n_bytes =
-      static_cast<size_t>(n_tokens) * n_embd_gqa * ggml_type_size(GGML_TYPE_BF16);
+      static_cast<size_t>(n_embd_gqa) * ggml_type_size(GGML_TYPE_BF16);
 
   ggml_backend_tensor_get(memory_k, k_out, byte_offset, n_bytes);
   ggml_backend_tensor_get(memory_v, v_out, byte_offset, n_bytes);

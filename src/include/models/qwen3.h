@@ -94,7 +94,8 @@ struct Qwen3Layer {
 
 class Qwen3Model {
 public:
-  Qwen3Model(const std::string& model_path, int n_ctx_total = 40960);
+  Qwen3Model(const std::string& model_path, int n_ctx_total = 0,
+             int num_kvcache_blocks = 0, int kvcache_block_size = 256);
   Qwen3Model(const Qwen3Model& other) = delete;
   Qwen3Model& operator=(const Qwen3Model& other) = delete;
   Qwen3Model(Qwen3Model&& other) = delete;
@@ -129,11 +130,11 @@ public:
   ggml_backend_t GetBackend() const { return backend_; }
   ggml_context* GetComputeCtx() const { return ctx_compute; }
 
-  // KV cache: per-sequence contiguous regions inside a flat buffer
-  // [n_layer][n_ctx_total][n_embd_gqa]; base_pos = sequence's start offset
-  void WriteKVToCache(int layer, int base_pos, int pos,
-                      const void* k_data, const void* v_data, int n_tokens);
-  void ReadKVFromCache(int layer, int base_pos, int start, int n_tokens,
+  // Paged KV cache: [n_layer][num_blocks][block_size][n_embd_gqa] stored as
+  // one flat BF16 buffer per K/V.  slot = block_id * block_size + offset.
+  void WriteKVToCache(int layer, int slot,
+                      const void* k_data, const void* v_data);
+  void ReadKVFromCache(int layer, int slot,
                        void* k_out, void* v_out);
 
 public:
@@ -169,7 +170,9 @@ private:
 
   struct ggml_tensor* memory_k = nullptr;
   struct ggml_tensor* memory_v = nullptr;
-  int n_ctx_total_ = 40960;
+  int n_ctx_total_ = 0;
+  int num_kvcache_blocks_ = 0;
+  int kvcache_block_size_ = 256;
 
   struct ggml_context* ctx_w = nullptr;
   struct ggml_context* ctx_kv = nullptr;

@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include "config.h"
 #include "engine/sequence.h"
@@ -69,9 +68,6 @@ private:
   Config config_;
   std::unique_ptr<models::Qwen3Model> model_;
 
-  // Per-sequence cache base offset inside [n_ctx_total] flat cache
-  std::unordered_map<int, int> seq_cache_base_;
-  int next_cache_offset_ = 0;
 };
 
 }  // namespace engine

@@ -42,9 +42,11 @@ LLMEngine::LLMEngine(const std::string& model_path, Config config)
     }
   }
 
-  // Compute KV cache block count from model's context length
+  // Compute KV cache block count from model's context length.
+  // Keep it in sync with Qwen3Model's rounded paged cache allocation.
   int n_ctx = model_runner_->GetMaxContextLen();
-  config_.num_kvcache_blocks = n_ctx / config_.kvcache_block_size;
+  config_.num_kvcache_blocks =
+      (n_ctx + config_.kvcache_block_size - 1) / config_.kvcache_block_size;
 
   scheduler_ = std::make_unique<Scheduler>(config_);
 }

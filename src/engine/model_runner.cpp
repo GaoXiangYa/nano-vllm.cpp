@@ -14,7 +14,8 @@ namespace engine {
 
 ModelRunner::ModelRunner(const std::string& model_path, Config& config)
     : config_(config),
-      model_(std::make_unique<models::Qwen3Model>(model_path)) {
+      model_(std::make_unique<models::Qwen3Model>(
+          model_path, 0, 0, config_.kvcache_block_size)) {
 }
 
 int ModelRunner::GetMaxContextLen() const {
@@ -25,23 +26,11 @@ std::vector<int> ModelRunner::Run(const std::vector<Sequence*>& seqs,
                                   bool is_prefill) {
   if (seqs.empty()) return {};
 
-  // Assign per-sequence cache base offsets
-  int cache_total = model_->GetHparams().n_ctx;
-  for (auto* seq : seqs) {
-    if (!seq_cache_base_.count(seq->GetSeqId())) {
-      if (next_cache_offset_ + config_.max_model_len > cache_total) {
-        next_cache_offset_ = 0;  // wrap around (simple reuse)
-      }
-      seq_cache_base_[seq->GetSeqId()] = next_cache_offset_;
-      next_cache_offset_ += config_.max_model_len;
-    }
-  }
-
   std::vector<int> input_ids;
   std::vector<int> positions;
   std::vector<int> output_indices;
   std::vector<int> seq_boundaries;
-  std::vector<int> seq_starts;   // per-seq start position in cache
+  std::vector<int> seq_starts;   // per-seq start logical token position
   std::vector<int> token_offsets;  // per-seq token offset in concatenated input
   PrepareInputs(seqs, is_prefill, input_ids, positions, output_indices,
                 seq_boundaries, seq_starts, token_offsets);
@@ -279,14 +268,23 @@ void ModelRunner::StorePrefillKV(const std::vector<Sequence*>& seqs,
       int cnt = (s + 1 < n_seqs ? token_offsets[s + 1] : n_tokens) - off;
       if (cnt <= 0) continue;
 
-      int base = seq_cache_base_[seqs[s]->GetSeqId()];
+      const auto& block_table = seqs[s]->GetBlockTable();
+      const int block_size = config_.kvcache_block_size;
       std::vector<ggml_bf16_t> k_bf16(static_cast<size_t>(cnt) * kv_per_token);
       std::vector<ggml_bf16_t> v_bf16(static_cast<size_t>(cnt) * kv_per_token);
       ggml_fp32_to_bf16_row(k_buf.data() + static_cast<size_t>(off) * kv_per_token,
                             k_bf16.data(), static_cast<int64_t>(cnt) * kv_per_token);
       ggml_fp32_to_bf16_row(v_buf.data() + static_cast<size_t>(off) * kv_per_token,
                             v_bf16.data(), static_cast<int64_t>(cnt) * kv_per_token);
-      model_->WriteKVToCache(il, base, start, k_bf16.data(), v_bf16.data(), cnt);
+      for (int i = 0; i < cnt; ++i) {
+        const int pos = start + i;
+        const int block_id = static_cast<int>(block_table[pos / block_size]);
+        const int slot = block_id * block_size + pos % block_size;
+        model_->WriteKVToCache(
+            il, slot,
+            k_bf16.data() + static_cast<size_t>(i) * kv_per_token,
+            v_bf16.data() + static_cast<size_t>(i) * kv_per_token);
+      }
     }
   }
 }
@@ -317,16 +315,26 @@ void ModelRunner::LoadHistoryKV(const std::vector<Sequence*>& seqs,
     if (!k_hist || !v_hist) continue;
 
     int hist_offset = 0;
+    std::vector<ggml_bf16_t> k_tmp(kv_per_token);
+    std::vector<ggml_bf16_t> v_tmp(kv_per_token);
+    const int block_size = config_.kvcache_block_size;
     for (int s = 0; s < n_seqs; ++s) {
       int ctx = ctx_lens[s];
       if (ctx <= 0) continue;
-      int base = seq_cache_base_[seqs[s]->GetSeqId()];
-      model_->ReadKVFromCache(
-          il, base, 0, ctx,
-          k_bf16.data() +
-              static_cast<size_t>(hist_offset) * kv_per_token * sizeof(uint16_t),
-          v_bf16.data() +
-              static_cast<size_t>(hist_offset) * kv_per_token * sizeof(uint16_t));
+      const auto& block_table = seqs[s]->GetBlockTable();
+      for (int i = 0; i < ctx; ++i) {
+        const int block_id = static_cast<int>(block_table[i / block_size]);
+        const int slot = block_id * block_size + i % block_size;
+        model_->ReadKVFromCache(il, slot, k_tmp.data(), v_tmp.data());
+        std::memcpy(
+            k_bf16.data() +
+                static_cast<size_t>(hist_offset + i) * kv_per_token * sizeof(uint16_t),
+            k_tmp.data(), static_cast<size_t>(kv_per_token) * sizeof(uint16_t));
+        std::memcpy(
+            v_bf16.data() +
+                static_cast<size_t>(hist_offset + i) * kv_per_token * sizeof(uint16_t),
+            v_tmp.data(), static_cast<size_t>(kv_per_token) * sizeof(uint16_t));
+      }
       hist_offset += ctx;
     }
 
@@ -362,7 +370,7 @@ void ModelRunner::LoadHistoryKV(const std::vector<Sequence*>& seqs,
 }
 
 // After decode graph compute, append each sequence's new K/V (F32 outputs)
-// converted to BF16 into the cache at (slot, ctx).
+// converted to BF16 into the paged cache at its physical slot.
 void ModelRunner::AppendDecodeKV(const std::vector<Sequence*>& seqs) {
   auto& hparams = model_->GetHparams();
   const int n_layer = hparams.n_layer;
@@ -383,16 +391,19 @@ void ModelRunner::AppendDecodeKV(const std::vector<Sequence*>& seqs) {
     ggml_backend_tensor_get(v_out, v_buf.data(), 0,
                             v_buf.size() * sizeof(float));
 
+    const int block_size = config_.kvcache_block_size;
     for (int s = 0; s < n_seqs; ++s) {
-      int base = seq_cache_base_[seqs[s]->GetSeqId()];
-      int pos = static_cast<int>(seqs[s]->SequenceLen()) - 1;
+      const int pos = static_cast<int>(seqs[s]->SequenceLen()) - 1;
+      const auto& block_table = seqs[s]->GetBlockTable();
+      const int block_id = static_cast<int>(block_table[pos / block_size]);
+      const int slot = block_id * block_size + pos % block_size;
       ggml_bf16_t k_bf16[1024];
       ggml_bf16_t v_bf16[1024];
       ggml_fp32_to_bf16_row(
           k_buf.data() + static_cast<size_t>(s) * kv_per_token, k_bf16, kv_per_token);
       ggml_fp32_to_bf16_row(
           v_buf.data() + static_cast<size_t>(s) * kv_per_token, v_bf16, kv_per_token);
-      model_->WriteKVToCache(il, base, pos, k_bf16, v_bf16, 1);
+      model_->WriteKVToCache(il, slot, k_bf16, v_bf16);
     }
   }
 }
