@@ -24,7 +24,8 @@
 
 namespace models {
 
-Qwen3Model::Qwen3Model(const std::string& model_path) {
+Qwen3Model::Qwen3Model(const std::string& model_path, int n_ctx_total)
+    : n_ctx_total_(n_ctx_total) {
   std::filesystem::path path(model_path);
   if (!std::filesystem::exists(path)) {
     throw std::runtime_error("Model path does not exist: " + model_path);
@@ -164,12 +165,12 @@ Qwen3Model::Qwen3Model(const std::string& model_path) {
   // Allocate weight tensors in backend buffer
   this->buffer_w_ = ggml_backend_alloc_ctx_tensors(this->ctx_w, this->backend_);
 
-  // Allocate KV cache
+  // Allocate KV cache: [n_layer][n_ctx_total][n_embd_gqa]
   {
     const auto n_layer = this->hparams_.n_layer;
-    const auto n_ctx = this->hparams_.n_ctx;
     const auto n_embd_gqa = this->hparams_.n_embd_k_gqa;
-    const size_t n_elements = static_cast<size_t>(n_layer) * n_ctx * n_embd_gqa;
+    const size_t n_elements = static_cast<size_t>(n_layer) *
+                              static_cast<size_t>(n_ctx_total_) * n_embd_gqa;
 
     struct ggml_init_params kv_params = {
         ggml_tensor_overhead() * 2,
@@ -373,39 +374,29 @@ ggml_tensor* Qwen3Model::BuildAttention(ggml_tensor* q_cur,
 }
 
 // KV cache helpers (outside graph, used by runner)
-void Qwen3Model::WriteKVToCache(int layer, int cache_pos,
-                                 ggml_tensor* k_tensor,
-                                 ggml_tensor* v_tensor) {
+// Layout: [n_layer][n_ctx_total][n_embd_gqa], BF16
+void Qwen3Model::WriteKVToCache(int layer, int base_pos, int pos,
+                                const void* k_data, const void* v_data,
+                                int n_tokens) {
   const auto n_embd_gqa = hparams_.n_embd_k_gqa;
-  const auto n_ctx = hparams_.n_ctx;
-  const size_t layer_offset =
-      static_cast<size_t>(layer) * n_ctx * n_embd_gqa;
-  const size_t pos_offset = static_cast<size_t>(cache_pos) * n_embd_gqa;
-  const size_t byte_offset =
-      (layer_offset + pos_offset) * ggml_type_size(GGML_TYPE_BF16);
+  const size_t offset =
+      (static_cast<size_t>(layer) * n_ctx_total_ + base_pos + pos) *
+      n_embd_gqa;
+  const size_t byte_offset = offset * ggml_type_size(GGML_TYPE_BF16);
+  const size_t n_bytes =
+      static_cast<size_t>(n_tokens) * n_embd_gqa * ggml_type_size(GGML_TYPE_BF16);
 
-  const size_t k_bytes = ggml_nbytes(k_tensor);
-  const size_t v_bytes = ggml_nbytes(v_tensor);
-
-  // Read tensor data
-  std::vector<uint8_t> k_buf(k_bytes);
-  std::vector<uint8_t> v_buf(v_bytes);
-  ggml_backend_tensor_get(k_tensor, k_buf.data(), 0, k_bytes);
-  ggml_backend_tensor_get(v_tensor, v_buf.data(), 0, v_bytes);
-
-  ggml_backend_tensor_set(memory_k, k_buf.data(), byte_offset, k_bytes);
-  ggml_backend_tensor_set(memory_v, v_buf.data(), byte_offset, v_bytes);
+  ggml_backend_tensor_set(memory_k, k_data, byte_offset, n_bytes);
+  ggml_backend_tensor_set(memory_v, v_data, byte_offset, n_bytes);
 }
 
-void Qwen3Model::ReadKVFromCache(int layer, int cache_start, int n_tokens,
-                                  void* k_out, void* v_out) {
+void Qwen3Model::ReadKVFromCache(int layer, int base_pos, int start, int n_tokens,
+                                 void* k_out, void* v_out) {
   const auto n_embd_gqa = hparams_.n_embd_k_gqa;
-  const auto n_ctx = hparams_.n_ctx;
-  const size_t layer_offset =
-      static_cast<size_t>(layer) * n_ctx * n_embd_gqa;
-  const size_t pos_offset = static_cast<size_t>(cache_start) * n_embd_gqa;
-  const size_t byte_offset =
-      (layer_offset + pos_offset) * ggml_type_size(GGML_TYPE_BF16);
+  const size_t offset =
+      (static_cast<size_t>(layer) * n_ctx_total_ + base_pos + start) *
+      n_embd_gqa;
+  const size_t byte_offset = offset * ggml_type_size(GGML_TYPE_BF16);
   const size_t n_bytes =
       static_cast<size_t>(n_tokens) * n_embd_gqa * ggml_type_size(GGML_TYPE_BF16);
 
@@ -423,7 +414,7 @@ ggml_tensor* Qwen3Model::BuildOutputLayer(ggml_tensor* input) {
 
 // Build prefill graph
 // All tokens are new (no prefix cache reuse in attention)
-void Qwen3Model::BuildPrefillGraph(int n_tokens, int /*cache_offset*/, int n_outputs) {
+void Qwen3Model::BuildPrefillGraph(int n_tokens, int n_outputs) {
   Reset();
 
   const int n_rot = hparams_.n_embd_head;
@@ -454,6 +445,12 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int /*cache_offset*/, int n_out
     auto q_cur = ggml_mul_mat(this->ctx_compute, layer.wq, cur);
     auto k_cur = ggml_mul_mat(this->ctx_compute, layer.wk, cur);
     auto v_cur = ggml_mul_mat(this->ctx_compute, layer.wv, cur);
+    // Keep the pre-reshape V projection tensor alive until after the graph
+    // runs.  The runner reads the permuted view "v_out_i" after compute; the
+    // view does not own storage, so the storage tensor itself must be a graph
+    // output, otherwise ggml's allocator may reuse its buffer.
+    ggml_set_name(v_cur, std::format("v_proj_raw_{}", il).c_str());
+    ggml_set_output(v_cur);
 
     // Reshape to [head_dim, n_head, n_tokens]: matches raw memory layout,
     // where each token's 2048-dim (16 heads x 128) is contiguous
@@ -482,6 +479,11 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int /*cache_offset*/, int n_out
                            hparams_.rope_freq_base, hparams_.rope_freq_scale,
                            hparams_.rope_ext_factor, hparams_.attn_factor,
                            hparams_.beta_fast, hparams_.beta_slow);
+    // This is the storage tensor backing the permuted "k_out_i" view read by
+    // the runner after graph execution; it must itself be a graph output so
+    // ggml's allocator keeps its buffer alive.
+    ggml_set_name(k_cur, std::format("k_out_raw_{}", il).c_str());
+    ggml_set_output(k_cur);
 
 
     // Permute to flash_attn layout [head_dim, n_tokens, n_head]
@@ -493,7 +495,10 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int /*cache_offset*/, int n_out
     // Attention with self K,V (causal mask)
     cur = BuildAttention(q_cur, k_cur, v_cur, mask);
 
-    // Mark K,V as outputs
+    // Mark K,V as outputs (permuted layout [head_dim, n_tokens, n_head_kv];
+    // each token's K/V is 1024 contiguous elements)
+    ggml_set_name(k_cur, std::format("k_out_{}", il).c_str());
+    ggml_set_name(v_cur, std::format("v_out_{}", il).c_str());
     ggml_set_output(k_cur);
     ggml_set_output(v_cur);
 
@@ -521,6 +526,120 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int /*cache_offset*/, int n_out
   cur = BuildOutputNorm(cur);
   this->logits = BuildOutputLayer(cur);
   // Ensure logits are F32
+  if (this->logits->type != GGML_TYPE_F32) {
+    this->logits = ggml_cast(this->ctx_compute, this->logits, GGML_TYPE_F32);
+  }
+
+  ggml_build_forward_expand(this->compute_graph_, this->logits);
+}
+
+// Build decode graph: one new token per sequence.
+// History K/V is pre-filled by the runner into k_hist_in/v_hist_in
+// ([head_dim, total_hist, n_head_kv]); the newly computed K/V is concatenated
+// in-graph so attention sees the full context. New K/V are graph outputs so
+// the runner can append them to the KV cache.
+void Qwen3Model::BuildDecodeGraph(int n_seqs, int total_hist,
+                                  const std::vector<int>& /*ctx_lens*/) {
+  Reset();
+
+  const int n_rot = hparams_.n_embd_head;
+  const int total_kv = total_hist + n_seqs;
+
+  auto cur = BuildInputEmbedding(this->tok_embd_, n_seqs);
+  cur = ggml_cast(this->ctx_compute, cur, GGML_TYPE_F32);
+  auto pos = BuildInputPosition(n_seqs);
+
+  // Varlen mask [total_kv, PAD(n_seqs, 64)]: filled by runner per sequence
+  auto mask = BuildKQMask(total_kv, n_seqs, false);
+
+  ggml_tensor* residual = nullptr;
+  for (int il = 0; il < hparams_.n_layer; ++il) {
+    auto& layer = layers_[il];
+
+    // Per-layer history K/V inputs (runner pre-fills from KV cache)
+    auto k_hist = ggml_new_tensor_3d(
+        this->ctx_compute, GGML_TYPE_F32, hparams_.n_embd_head,
+        hparams_.n_head_kv, total_hist);
+    auto v_hist = ggml_new_tensor_3d(
+        this->ctx_compute, GGML_TYPE_F32, hparams_.n_embd_head,
+        hparams_.n_head_kv, total_hist);
+    ggml_set_name(k_hist, std::format("k_hist_in_{}", il).c_str());
+    ggml_set_name(v_hist, std::format("v_hist_in_{}", il).c_str());
+    ggml_set_input(k_hist);
+    ggml_set_input(v_hist);
+
+    if (residual != nullptr) {
+      cur = ggml_add(this->ctx_compute, cur, residual);
+    }
+    auto attn_residual = cur;
+    cur = BuildNorm(cur, layer.attn_norm, nullptr, Qwen3NormType::RmsNorm);
+
+    auto q_cur = ggml_mul_mat(this->ctx_compute, layer.wq, cur);
+    auto k_cur = ggml_mul_mat(this->ctx_compute, layer.wk, cur);
+    auto v_cur = ggml_mul_mat(this->ctx_compute, layer.wv, cur);
+    // Same lifetime requirement as prefill: the append step reads permuted
+    // views of the projection outputs after graph execution.
+    ggml_set_name(v_cur, std::format("v_proj_raw_{}", il).c_str());
+    ggml_set_output(v_cur);
+
+    // Rope layout [head_dim, n_head, n_seqs] (positions indexed by ne2)
+    q_cur = ggml_reshape_3d(this->ctx_compute, q_cur, hparams_.n_embd_head,
+                             hparams_.n_head, n_seqs);
+    k_cur = ggml_reshape_3d(this->ctx_compute, k_cur, hparams_.n_embd_head,
+                             hparams_.n_head_kv, n_seqs);
+    v_cur = ggml_reshape_3d(this->ctx_compute, v_cur, hparams_.n_embd_head,
+                             hparams_.n_head_kv, n_seqs);
+
+    q_cur = BuildNorm(q_cur, layer.attn_q_norm, nullptr,
+                       Qwen3NormType::RmsNorm);
+    k_cur = BuildNorm(k_cur, layer.attn_k_norm, nullptr,
+                       Qwen3NormType::RmsNorm);
+
+    q_cur = ggml_rope_ext(this->ctx_compute, q_cur, pos, nullptr, n_rot,
+                           GGML_ROPE_TYPE_NEOX, hparams_.n_ctx,
+                           hparams_.rope_freq_base, hparams_.rope_freq_scale,
+                           hparams_.rope_ext_factor, hparams_.attn_factor,
+                           hparams_.beta_fast, hparams_.beta_slow);
+    k_cur = ggml_rope_ext(this->ctx_compute, k_cur, pos, nullptr, n_rot,
+                           GGML_ROPE_TYPE_NEOX, hparams_.n_ctx,
+                           hparams_.rope_freq_base, hparams_.rope_freq_scale,
+                           hparams_.rope_ext_factor, hparams_.attn_factor,
+                           hparams_.beta_fast, hparams_.beta_slow);
+    // The runner appends this RoPE'd K tensor (via the later permuted view
+    // "k_out_i") to the KV cache after the graph has finished.  Make the
+    // storage tensor a graph output so the allocator cannot reuse it.
+    ggml_set_name(k_cur, std::format("d_k_rope_{}", il).c_str());
+    ggml_set_output(k_cur);
+
+    // Q permutes to flash-attn layout [head_dim, n_seqs, n_head]
+    q_cur = ggml_permute(this->ctx_compute, q_cur, 0, 2, 1, 3);
+
+    // K/V stay in [head_dim, n_head_kv, positions]; concat history + current
+    // along the position dim, then permute to flash-attn layout
+    auto k_full = ggml_concat(this->ctx_compute, k_hist, k_cur, 2);
+    auto v_full = ggml_concat(this->ctx_compute, v_hist, v_cur, 2);
+    k_full = ggml_permute(this->ctx_compute, k_full, 0, 2, 1, 3);
+    v_full = ggml_permute(this->ctx_compute, v_full, 0, 2, 1, 3);
+
+    cur = BuildAttention(q_cur, k_full, v_full, mask);
+
+    // New K/V as graph outputs for cache append
+    ggml_set_name(k_cur, std::format("k_out_{}", il).c_str());
+    ggml_set_name(v_cur, std::format("v_out_{}", il).c_str());
+    ggml_set_output(k_cur);
+    ggml_set_output(v_cur);
+
+    cur = ggml_mul_mat(this->ctx_compute, layer.wo, cur);
+
+    cur = ggml_add(this->ctx_compute, cur, attn_residual);
+    residual = cur;
+    cur = BuildNorm(cur, layer.ffn_norm, nullptr, Qwen3NormType::RmsNorm);
+    cur = BuildFFN(cur, layer.ffn_up, layer.ffn_gate, layer.ffn_down);
+  }
+
+  cur = ggml_add(this->ctx_compute, cur, residual);
+  cur = BuildOutputNorm(cur);
+  this->logits = BuildOutputLayer(cur);
   if (this->logits->type != GGML_TYPE_F32) {
     this->logits = ggml_cast(this->ctx_compute, this->logits, GGML_TYPE_F32);
   }

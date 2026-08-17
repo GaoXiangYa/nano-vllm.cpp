@@ -94,15 +94,23 @@ struct Qwen3Layer {
 
 class Qwen3Model {
 public:
-  explicit Qwen3Model(const std::string& model_path);
+  Qwen3Model(const std::string& model_path, int n_ctx_total = 40960);
   Qwen3Model(const Qwen3Model& other) = delete;
   Qwen3Model& operator=(const Qwen3Model& other) = delete;
   Qwen3Model(Qwen3Model&& other) = delete;
   Qwen3Model& operator=(Qwen3Model&& other) = delete;
   ~Qwen3Model();
 
-  // Build the compute graph for processing n_tokens
-  void BuildPrefillGraph(int n_tokens, int cache_offset, int n_outputs = -1);
+  // Build the compute graph for prefill: process n_tokens with causal mask
+  // K/V of every layer are graph outputs; the runner stores them into the
+  // KV cache afterwards.
+  void BuildPrefillGraph(int n_tokens, int n_outputs = -1);
+
+  // Build the compute graph for decode: process one new token per sequence.
+  // Attention reads history K/V from k_hist_in/v_hist_in (runner pre-filled
+  // from the KV cache) concatenated with the newly computed K/V.
+  void BuildDecodeGraph(int n_seqs, int total_hist,
+                        const std::vector<int>& ctx_lens);
 
   const std::unique_ptr<tokenizers::Tokenizer>& GetTokenizer() const {
     return tokenizer_;
@@ -121,10 +129,11 @@ public:
   ggml_backend_t GetBackend() const { return backend_; }
   ggml_context* GetComputeCtx() const { return ctx_compute; }
 
-  // KV cache read/write (outside graph, for runner)
-  void WriteKVToCache(int layer, int cache_pos,
-                      ggml_tensor* k_tensor, ggml_tensor* v_tensor);
-  void ReadKVFromCache(int layer, int cache_start, int n_tokens,
+  // KV cache: per-sequence contiguous regions inside a flat buffer
+  // [n_layer][n_ctx_total][n_embd_gqa]; base_pos = sequence's start offset
+  void WriteKVToCache(int layer, int base_pos, int pos,
+                      const void* k_data, const void* v_data, int n_tokens);
+  void ReadKVFromCache(int layer, int base_pos, int start, int n_tokens,
                        void* k_out, void* v_out);
 
 public:
@@ -160,8 +169,7 @@ private:
 
   struct ggml_tensor* memory_k = nullptr;
   struct ggml_tensor* memory_v = nullptr;
-  struct ggml_tensor* memory_kq_mask = nullptr;
-  struct ggml_tensor* memory_kq_mask_cnv = nullptr;
+  int n_ctx_total_ = 40960;
 
   struct ggml_context* ctx_w = nullptr;
   struct ggml_context* ctx_kv = nullptr;

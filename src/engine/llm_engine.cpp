@@ -35,7 +35,7 @@ LLMEngine::LLMEngine(const std::string& model_path, Config config)
                           std::istreambuf_iterator<char>());
       std::smatch m;
       if (std::regex_search(content, m,
-                            std::regex("\"chat_template\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\""))) {
+                            std::regex(R"lit("chat_template"\s*:\s*"((?:\\.|[^"\\])*)")lit"))) {
         std::string tmpl = m[1].str();
         chat_template_type_ = chat::DetectChatTemplate(tmpl);
       }
