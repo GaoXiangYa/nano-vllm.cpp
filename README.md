@@ -1,6 +1,6 @@
 # nano-vllm.cpp
 
-A lightweight LLM inference engine written in **C++20 + GGML**, inspired by [nano-vllm](https://github.com/GeeeekExplorer/nano-vllm).
+A lightweight LLM inference engine written in C++20 + [ggml](https://github.com/ggml-org/ggml), inspired by [nano-vllm](https://github.com/GeeeekExplorer/nano-vllm).
 
 Currently focuses on **Qwen3-family models** and includes:
 
