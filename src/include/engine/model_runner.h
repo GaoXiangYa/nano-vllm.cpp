@@ -51,7 +51,8 @@ private:
   // After prefill graph compute: extract per-layer K/V and write to cache
   void StorePrefillKV(const std::vector<Sequence*>& seqs,
                       const std::vector<int>& token_offsets,
-                      const std::vector<int>& seq_starts);
+                      const std::vector<int>& seq_starts,
+                      int n_tokens);
 
   // Before decode graph compute: load history K/V into k_hist_in/v_hist_in
   void LoadHistoryKV(const std::vector<Sequence*>& seqs,

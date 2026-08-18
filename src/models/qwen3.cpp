@@ -381,6 +381,17 @@ ggml_tensor* Qwen3Model::BuildAttention(ggml_tensor* q_cur,
                                          ggml_tensor* mask) {
   const float scale = 1.0f / std::sqrt(static_cast<float>(hparams_.n_embd_head));
 
+  // ggml's CUDA flash-attention kernels only support F16 (or quantized) K/V.
+  // The Q/K/V projections here are F32, so cast K/V to F16 for the FA op.
+  // The caller still keeps the original F32 K/V tensors for the KV cache
+  // outputs, so cache stores are unaffected.
+  if (k_cur->type != GGML_TYPE_F16) {
+    k_cur = ggml_cast(this->ctx_compute, k_cur, GGML_TYPE_F16);
+  }
+  if (v_cur->type != GGML_TYPE_F16) {
+    v_cur = ggml_cast(this->ctx_compute, v_cur, GGML_TYPE_F16);
+  }
+
   auto kq = ggml_flash_attn_ext(this->ctx_compute, q_cur, k_cur, v_cur, mask,
                                  scale, 0.0f, 0.0f);
 
@@ -444,8 +455,11 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int n_outputs) {
   if (n_outputs < 0) n_outputs = n_tokens;
   auto inp_out_ids = BuildInputIds(n_outputs);
 
-  // KQ mask for prefill: causal [n_tokens, n_tokens]
-  auto mask = BuildKQMask(n_tokens, n_tokens, true);
+  // KQ mask for prefill: causal [n_tokens, n_tokens].
+  // ggml's CUDA FlashAttention requires the KV sequence length to be a
+  // multiple of FATTN_KQ_STRIDE (256), so allocate/pad the KV dimension.
+  const int n_kv_pad = GGML_PAD(n_tokens, 256);
+  auto mask = BuildKQMask(n_kv_pad, n_tokens, true);
 
   // Qwen3 pre-norm residual fusion; first layer has no residual (None in Python)
   ggml_tensor* residual = nullptr;
@@ -501,25 +515,24 @@ void Qwen3Model::BuildPrefillGraph(int n_tokens, int n_outputs) {
     // This is the storage tensor backing the permuted "k_out_i" view read by
     // the runner after graph execution; it must itself be a graph output so
     // ggml's allocator keeps its buffer alive.
-    ggml_set_name(k_cur, std::format("k_out_raw_{}", il).c_str());
+    ggml_set_name(k_cur, std::format("k_out_{}", il).c_str());
     ggml_set_output(k_cur);
+    ggml_set_name(v_cur, std::format("v_out_{}", il).c_str());
+    ggml_set_output(v_cur);
 
 
-    // Permute to flash_attn layout [head_dim, n_tokens, n_head]
-    // (metadata-only op; strides carry the correct memory offsets)
+    auto k_attn = ggml_pad(this->ctx_compute, k_cur, 0, 0,
+                           n_kv_pad - n_tokens, 0);
+    auto v_attn = ggml_pad(this->ctx_compute, v_cur, 0, 0,
+                           n_kv_pad - n_tokens, 0);
     q_cur = ggml_permute(this->ctx_compute, q_cur, 0, 2, 1, 3);
-    k_cur = ggml_permute(this->ctx_compute, k_cur, 0, 2, 1, 3);
-    v_cur = ggml_permute(this->ctx_compute, v_cur, 0, 2, 1, 3);
+    k_attn = ggml_permute(this->ctx_compute, k_attn, 0, 2, 1, 3);
+    v_attn = ggml_permute(this->ctx_compute, v_attn, 0, 2, 1, 3);
 
     // Attention with self K,V (causal mask)
-    cur = BuildAttention(q_cur, k_cur, v_cur, mask);
+    cur = BuildAttention(q_cur, k_attn, v_attn, mask);
 
-    // Mark K,V as outputs (permuted layout [head_dim, n_tokens, n_head_kv];
-    // each token's K/V is 1024 contiguous elements)
-    ggml_set_name(k_cur, std::format("k_out_{}", il).c_str());
-    ggml_set_name(v_cur, std::format("v_out_{}", il).c_str());
-    ggml_set_output(k_cur);
-    ggml_set_output(v_cur);
+    // (KV-cache outputs are the unpadded raw K/V tensors named above.)
 
     // Output projection
     cur = ggml_mul_mat(this->ctx_compute, layer.wo, cur);
@@ -568,8 +581,10 @@ void Qwen3Model::BuildDecodeGraph(int n_seqs, int total_hist,
   cur = ggml_cast(this->ctx_compute, cur, GGML_TYPE_F32);
   auto pos = BuildInputPosition(n_seqs);
 
-  // Varlen mask [total_kv, PAD(n_seqs, 64)]: filled by runner per sequence
-  auto mask = BuildKQMask(total_kv, n_seqs, false);
+  // Varlen mask [total_kv_pad, PAD(n_seqs, 64)]: filled by runner per
+  // sequence.  total_kv is padded to ggml's CUDA FlashAttention KV stride.
+  const int total_kv_pad = GGML_PAD(total_kv, 256);
+  auto mask = BuildKQMask(total_kv_pad, n_seqs, false);
 
   ggml_tensor* residual = nullptr;
   for (int il = 0; il < hparams_.n_layer; ++il) {
@@ -637,6 +652,10 @@ void Qwen3Model::BuildDecodeGraph(int n_seqs, int total_hist,
     // along the position dim, then permute to flash-attn layout
     auto k_full = ggml_concat(this->ctx_compute, k_hist, k_cur, 2);
     auto v_full = ggml_concat(this->ctx_compute, v_hist, v_cur, 2);
+    k_full = ggml_pad(this->ctx_compute, k_full, 0, 0,
+                      total_kv_pad - total_kv, 0);
+    v_full = ggml_pad(this->ctx_compute, v_full, 0, 0,
+                      total_kv_pad - total_kv, 0);
     k_full = ggml_permute(this->ctx_compute, k_full, 0, 2, 1, 3);
     v_full = ggml_permute(this->ctx_compute, v_full, 0, 2, 1, 3);
 

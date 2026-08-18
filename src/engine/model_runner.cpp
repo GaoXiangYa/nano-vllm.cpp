@@ -68,7 +68,7 @@ std::vector<int> ModelRunner::Run(const std::vector<Sequence*>& seqs,
 
     // Store per-layer K/V into the KV cache.  This must happen while the
     // graph outputs (and their backing tensors) are still allocated.
-    StorePrefillKV(seqs, token_offsets, seq_starts);
+    StorePrefillKV(seqs, token_offsets, seq_starts, n_tokens);
 
     auto* logits_tensor = model_->GetLogits();
     std::vector<float> logits_data(static_cast<size_t>(n_vocab) * n_outputs);
@@ -93,6 +93,10 @@ std::vector<int> ModelRunner::Run(const std::vector<Sequence*>& seqs,
 
   model_->BuildDecodeGraph(n_seqs, total_hist, ctx_lens);
 
+  // BuildDecodeGraph pads the KV length to a multiple of 256 for the CUDA
+  // FlashAttention kernel; the mask is created with the same padded length.
+  const int total_kv_pad = GGML_PAD(total_hist + n_seqs, 256);
+
   if (!model_->AllocateGraph()) {
     std::cerr << "Failed to allocate compute graph\n";
     return {};
@@ -111,7 +115,7 @@ std::vector<int> ModelRunner::Run(const std::vector<Sequence*>& seqs,
   // Load history K/V from cache into k_hist_in/v_hist_in
   LoadHistoryKV(seqs, ctx_lens, total_hist);
 
-  FillVarlenMask(inp_mask, total_hist + n_seqs, n_seqs, ctx_lens);
+  FillVarlenMask(inp_mask, total_kv_pad, n_seqs, ctx_lens);
 
   auto status = model_->GraphCompute();
   if (status != GGML_STATUS_SUCCESS) return {};
@@ -184,13 +188,16 @@ void ModelRunner::PrepareInputs(const std::vector<Sequence*>& seqs,
 void ModelRunner::FillCausalMask(ggml_tensor* mask, int n_tokens,
                                  const std::vector<int>& seq_boundaries) {
   constexpr int kPad = 64;
+  const int n_kv = static_cast<int>(mask->ne[0]);
   int n_pad = ((n_tokens + kPad - 1) / kPad) * kPad;
   const uint16_t neg_inf = 0xFC00;
   const uint16_t zero = 0x0000;
 
   // Start with everything masked: sequences must not attend across batch
   // boundaries.  Within each sequence only key_pos <= query_pos is unmasked.
-  std::vector<uint16_t> mask_data(static_cast<size_t>(n_tokens) * n_pad,
+  // mask->ne[0] is the (possibly padded) KV length; rows >= n_tokens stay
+  // fully masked.
+  std::vector<uint16_t> mask_data(static_cast<size_t>(n_kv) * n_pad,
                                   neg_inf);
   const int n_seqs = static_cast<int>(seq_boundaries.size());
   for (int s = 0; s < n_seqs; ++s) {
@@ -200,7 +207,7 @@ void ModelRunner::FillCausalMask(ggml_tensor* mask, int n_tokens,
     for (int j = seq_start; j < seq_end; ++j) {
       for (int i = seq_start; i <= j; ++i) {
         mask_data[static_cast<size_t>(i) +
-                  static_cast<size_t>(j) * n_tokens] = zero;
+                  static_cast<size_t>(j) * n_kv] = zero;
       }
     }
   }
@@ -240,7 +247,8 @@ void ModelRunner::FillVarlenMask(ggml_tensor* mask, int n_kv, int n_seqs,
 // map them back to (slot, position).
 void ModelRunner::StorePrefillKV(const std::vector<Sequence*>& seqs,
                                  const std::vector<int>& token_offsets,
-                                 const std::vector<int>& seq_starts) {
+                                 const std::vector<int>& seq_starts,
+                                 int n_tokens) {
   auto& hparams = model_->GetHparams();
   const int n_layer = hparams.n_layer;
   const int kv_per_token = hparams.n_embd_k_gqa;  // 1024 elements
@@ -253,14 +261,12 @@ void ModelRunner::StorePrefillKV(const std::vector<Sequence*>& seqs,
     auto* v_out = ggml_graph_get_tensor(graph, std::format("v_out_{}", il).c_str());
     if (!k_out || !v_out) continue;
 
-    const int n_tokens = static_cast<int>(ggml_nelements(k_out)) / kv_per_token;
     std::vector<float> k_buf(static_cast<size_t>(n_tokens) * kv_per_token);
     std::vector<float> v_buf(static_cast<size_t>(n_tokens) * kv_per_token);
     ggml_backend_tensor_get(k_out, k_buf.data(), 0,
                             k_buf.size() * sizeof(float));
     ggml_backend_tensor_get(v_out, v_buf.data(), 0,
                             v_buf.size() * sizeof(float));
-
     // Convert per sequence's tokens to BF16 and write at (slot, start+i)
     for (int s = 0; s < n_seqs; ++s) {
       int off = token_offsets[s];
